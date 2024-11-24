@@ -3,7 +3,7 @@ defmodule MempoolServer.MempoolFetcher do
   require Logger
 
   @node_url "http://213.239.193.208:9053"
-  @polling_interval 5000
+  @polling_interval 1000
   @token_bank_nft "7d672d1def471720ca5782fd6473e47e796d9ac0c138d9911346f118b2f6d9d9"
 
   def start_link(_opts) do
