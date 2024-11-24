@@ -1,0 +1,39 @@
+# Elixir-specific files
+/_build/
+deps/
+.erlang.cookie
+
+# Phoenix-specific files
+/assets/node_modules/
+node_modules/
+priv/static/
+
+# Environment files
+.env
+.env.*
+
+# Editor and system files
+*.swp
+*.swo
+*.DS_Store
+*.log
+*.tmp
+*.bak
+*.pid
+*.seed
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Test coverage
+cover/
+.coverage/
+.coverage.exs
+
+# Dialyzer artifacts
+dialyxir_erlangplt
+dialyxir_plt
+.erlang.plt
