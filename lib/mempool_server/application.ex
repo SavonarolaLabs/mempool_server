@@ -14,6 +14,7 @@ defmodule MempoolServer.Application do
       # Start a worker by calling: MempoolServer.Worker.start_link(arg)
       # {MempoolServer.Worker, arg},
       # Start to serve requests, typically the last entry
+      MempoolServer.Repo,
       MempoolServerWeb.Endpoint,
       # Start the MempoolFetcher
       MempoolServer.MempoolFetcher

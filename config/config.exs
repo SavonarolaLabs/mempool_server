@@ -10,6 +10,11 @@ import Config
 config :mempool_server,
   generators: [timestamp_type: :utc_datetime]
 
+# Configures the Repo (SQLite3 database)
+config :mempool_server, MempoolServer.Repo,
+  database: "priv/repo/mempool_server.sqlite3",
+  pool_size: 10
+
 # Configures the endpoint
 config :mempool_server, MempoolServerWeb.Endpoint,
   url: [host: "localhost"],

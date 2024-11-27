@@ -39,7 +39,9 @@ defmodule MempoolServer.MixProject do
       {:dns_cluster, "~> 0.1.1"},
       {:plug_cowboy, "~> 2.5"},
       {:cors_plug, "~> 3.0"},
-      {:httpoison, "~> 1.8"}
+      {:httpoison, "~> 1.8"},
+      {:ecto_sql, "~> 3.10"},
+      {:ecto_sqlite3, "~> 0.10.0"}
     ]
   end
 
