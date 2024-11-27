@@ -29,8 +29,27 @@ defmodule MempoolServer.MempoolFetcher do
 
   defp fetch_and_broadcast() do
     transactions = fetch_all_mempool_transactions()
-    broadcast_all_transactions(transactions)
-    broadcast_sigmausd_transactions(transactions)
+
+    # Build a map of boxId to box data from mempool outputs
+    box_map = build_box_map(transactions)
+
+    # Collect all unique input boxIds
+    input_box_ids = collect_input_box_ids(transactions)
+
+    # Fetch all input box data using the batch API
+    input_boxes = fetch_boxes_by_ids(input_box_ids)
+
+    # Merge input box data into a single map
+    input_box_map = Map.new(input_boxes, fn box -> {box["boxId"], box} end)
+
+    # Combine mempool box map and input box map
+    combined_box_map = Map.merge(box_map, input_box_map)
+
+    # Enhance transactions with full input data
+    enhanced_transactions = enhance_transactions(transactions, combined_box_map)
+
+    broadcast_all_transactions(enhanced_transactions)
+    broadcast_sigmausd_transactions(enhanced_transactions)
   end
 
   defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
@@ -49,6 +68,78 @@ defmodule MempoolServer.MempoolFetcher do
       {:error, %HTTPoison.Error{reason: reason}} ->
         Logger.error("Error fetching mempool transactions: #{inspect(reason)}")
         transactions
+    end
+  end
+
+  defp build_box_map(transactions) do
+    transactions
+    |> Enum.flat_map(&(&1["outputs"] || []))
+    |> Enum.reduce(%{}, fn output, acc ->
+      Map.put(acc, output["boxId"], output)
+    end)
+  end
+
+  defp collect_input_box_ids(transactions) do
+    transactions
+    |> Enum.flat_map(&(&1["inputs"] || []))
+    |> Enum.map(& &1["boxId"])
+    |> Enum.uniq()
+  end
+
+  defp fetch_boxes_by_ids(box_ids) do
+    # Split box_ids into chunks to avoid exceeding request size limits
+    box_ids
+    |> Enum.chunk_every(100)
+    |> Enum.flat_map(&fetch_boxes_batch/1)
+  end
+
+  defp fetch_boxes_batch(box_ids_chunk) do
+    url = "#{@node_url}/utxo/withPool/byIds"
+
+    headers = [
+      {"Content-Type", "application/json"},
+      {"Accept", "application/json"}
+    ]
+
+    body = Jason.encode!(box_ids_chunk)
+
+    case HTTPoison.post(url, body, headers) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
+        {:ok, boxes} = Jason.decode(response_body)
+        boxes
+
+      {:ok, %HTTPoison.Response{status_code: status_code, body: response_body}} ->
+        Logger.error("Error fetching boxes: HTTP #{status_code} - #{response_body}")
+        []
+
+      {:error, %HTTPoison.Error{reason: reason}} ->
+        Logger.error("Error fetching boxes: #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp enhance_transactions(transactions, box_map) do
+    transactions
+    |> Enum.map(&enhance_transaction(&1, box_map))
+  end
+
+  defp enhance_transaction(transaction, box_map) do
+    inputs = transaction["inputs"] || []
+    enhanced_inputs = Enum.map(inputs, &enhance_input(&1, box_map))
+    Map.put(transaction, "inputs", enhanced_inputs)
+  end
+
+  defp enhance_input(input, box_map) do
+    box_id = input["boxId"]
+
+    case Map.get(box_map, box_id) do
+      nil ->
+        # Box data not found, return input as is
+        input
+
+      box_data ->
+        # Merge box data into input
+        Map.merge(input, box_data)
     end
   end
 
