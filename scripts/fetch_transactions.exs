@@ -8,7 +8,7 @@ alias MempoolServer.Constants
 defmodule FetchTransactionsScript do
   @node_url "http://213.239.193.208:9053"
 
-  def fetch_transactions(address, limit \\ 10) do
+  def fetch_transactions(address, limit \\ 2) do
     url = "#{@node_url}/blockchain/transaction/byAddress?offset=0&limit=#{limit}"
     headers = [{"Content-Type", "text/plain"}]
     body = address
@@ -21,7 +21,10 @@ defmodule FetchTransactionsScript do
       {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
         IO.puts("API Response: #{response_body}")
         case Jason.decode(response_body) do
-          {:ok, data} -> {:ok, data}
+          {:ok, %{"items" => items}} -> {:ok, items}
+          {:ok, data} ->
+            IO.puts("Unexpected JSON structure: #{inspect(data)}")
+            {:error, :unexpected_json_structure}
           error ->
             IO.puts("JSON Decode Error: #{inspect(error)}")
             {:error, error}
@@ -42,19 +45,29 @@ defmodule FetchTransactionsScript do
 
     case fetch_transactions(address) do
       {:ok, transactions} when is_list(transactions) ->
-        case transactions do
-          [] ->
-            IO.puts("No transactions found for #{address}.")
-          txs ->
-            Enum.each(txs, fn tx ->
-              Repo.insert!(%MempoolServer.Transaction{
-                tx_id: tx["id"],
-                ergo_tree: tx["ergoTree"],
-                data: Jason.encode!(tx),
-                height: tx["height"]
-              })
-            end)
-            IO.puts("Saved #{length(txs)} transactions for #{address}.")
+        if transactions == [] do
+          IO.puts("No transactions found for #{address}.")
+        else
+          Enum.each(transactions, fn tx ->
+            tx_id = tx["id"]
+            height = tx["inclusionHeight"]
+
+            # Extract 'ergoTree' from the first output, if available
+            ergo_tree =
+              tx["outputs"]
+              |> Enum.find_value(fn output ->
+                if output["ergoTree"], do: output["ergoTree"], else: nil
+              end)
+
+            Repo.insert!(%MempoolServer.Transaction{
+              tx_id: tx_id,
+              ergo_tree: ergo_tree,
+              data: Jason.encode!(tx),
+              height: height
+            })
+          end)
+
+          IO.puts("Saved #{length(transactions)} transactions for #{address}.")
         end
 
       {:error, reason} ->

@@ -12,5 +12,6 @@ defmodule MempoolServerWeb.Router do
 
     get "/transactions", TransactionController, :index
     get "/transactions/sigmausd", TransactionController, :sigmausd_transactions
+    get "/history/recent", HistoryController, :recent_transactions
   end
 end
