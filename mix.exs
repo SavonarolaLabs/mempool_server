@@ -19,9 +19,10 @@ defmodule MempoolServer.MixProject do
   def application do
     [
       mod: {MempoolServer.Application, []},
-      extra_applications: [:logger, :runtime_tools, :httpoison]
+      extra_applications: [:logger, :runtime_tools, :httpoison, :hackney]
     ]
   end
+  
 
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
