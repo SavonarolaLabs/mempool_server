@@ -39,4 +39,4 @@ dialyxir_plt
 .erlang.plt
 
 # db file
-priv/repo/*.sqlite3
+priv/repo/*.sqlite3*
