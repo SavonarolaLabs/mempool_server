@@ -8,7 +8,8 @@
 import Config
 
 config :mempool_server,
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  ecto_repos: [MempoolServer.Repo] # Add this line
 
 # Configures the Repo (SQLite3 database)
 config :mempool_server, MempoolServer.Repo,
