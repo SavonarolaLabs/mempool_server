@@ -14,7 +14,9 @@ config :mempool_server,
 # Configures the Repo (SQLite3 database)
 config :mempool_server, MempoolServer.Repo,
   database: "priv/repo/mempool_server.sqlite3",
-  pool_size: 1
+  pool_size: 1,
+  journal_mode: :wal
+
 
 # Configures the endpoint
 config :mempool_server, MempoolServerWeb.Endpoint,
