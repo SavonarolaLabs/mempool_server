@@ -9,14 +9,15 @@ import Config
 
 config :mempool_server,
   generators: [timestamp_type: :utc_datetime],
-  ecto_repos: [MempoolServer.Repo] # Add this line
+  ecto_repos: [MempoolServer.Repo]
 
-# Configures the Repo (SQLite3 database)
+# Configures the Repo (PostgreSQL database)
 config :mempool_server, MempoolServer.Repo,
-  database: "priv/repo/mempool_server.sqlite3",
-  pool_size: 1,
-  journal_mode: :wal
-
+  username: "postgres",
+  password: "password",
+  database: "mempool_server_dev",
+  hostname: "localhost",
+  pool_size: 10
 
 # Configures the endpoint
 config :mempool_server, MempoolServerWeb.Endpoint,

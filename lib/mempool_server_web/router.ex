@@ -1,5 +1,3 @@
-# lib/mempool_server_web/router.ex
-
 defmodule MempoolServerWeb.Router do
   use MempoolServerWeb, :router
 
@@ -13,5 +11,8 @@ defmodule MempoolServerWeb.Router do
     get "/transactions", TransactionController, :index
     get "/transactions/sigmausd", TransactionController, :sigmausd_transactions
     get "/history/recent", HistoryController, :recent_transactions
+
+    # New routes for TrackedErgoTreeController
+    resources "/tracked_ergo_trees", TrackedErgoTreeController, only: [:index, :create, :update]
   end
 end

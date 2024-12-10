@@ -42,7 +42,7 @@ defmodule MempoolServer.MixProject do
       {:cors_plug, "~> 3.0"},
       {:httpoison, "~> 1.8"},
       {:ecto_sql, "~> 3.10"},
-      {:ecto_sqlite3, "~> 0.10.0"}
+      {:postgrex, ">= 0.0.0"}
     ]
   end
 
