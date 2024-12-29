@@ -1,12 +1,11 @@
 Mix.Task.run("app.start")
-
 {:ok, _} = Application.ensure_all_started(:hackney)
 
 alias MempoolServer.Repo
 alias MempoolServer.Constants
 
 defmodule FetchTransactionsScript do
-  @node_url "http://213.239.193.208:9053"
+  @node_url "https://ergfi.xyz:9443"
 
   def fetch_transactions(address, limit \\ 2) do
     url = "#{@node_url}/blockchain/transaction/byAddress?offset=0&limit=#{limit}"
@@ -25,6 +24,7 @@ defmodule FetchTransactionsScript do
           {:ok, data} ->
             IO.puts("Unexpected JSON structure: #{inspect(data)}")
             {:error, :unexpected_json_structure}
+
           error ->
             IO.puts("JSON Decode Error: #{inspect(error)}")
             {:error, error}
@@ -45,12 +45,32 @@ defmodule FetchTransactionsScript do
 
     case fetch_transactions(address) do
       {:ok, transactions} when is_list(transactions) ->
+        # Collect the IDs of the fetched transactions
+        fetched_ids = Enum.map(transactions, & &1["id"])
+
+        # Remove from the cache any IDs that were present before but not in fetched_ids
+        TransactionsCache.remove_unobserved_transactions(fetched_ids)
+
         if transactions == [] do
           IO.puts("No transactions found for #{address}.")
         else
           Enum.each(transactions, fn tx ->
             tx_id = tx["id"]
             height = tx["inclusionHeight"]
+
+            # Retrieve or store the creation timestamp in our in-memory cache
+            creation_timestamp =
+              case TransactionsCache.get_timestamp(tx_id) do
+                nil ->
+                  # If it's not in the cache, put a new timestamp (e.g. Unix ms)
+                  now_ms = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+                  TransactionsCache.put_timestamp(tx_id, now_ms)
+                  now_ms
+
+                ts ->
+                  # We already have a cached timestamp
+                  ts
+              end
 
             # Extract 'ergoTree' from the first output, if available
             ergo_tree =
@@ -63,7 +83,8 @@ defmodule FetchTransactionsScript do
               tx_id: tx_id,
               ergo_tree: ergo_tree,
               data: Jason.encode!(tx),
-              height: height
+              height: height,
+              creation_timestamp: creation_timestamp
             })
           end)
 
@@ -76,4 +97,5 @@ defmodule FetchTransactionsScript do
   end
 end
 
+# Run the script
 FetchTransactionsScript.save_transactions()

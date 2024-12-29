@@ -4,7 +4,7 @@ defmodule MempoolServerWeb.TransactionController do
   use MempoolServerWeb, :controller
   require Logger
 
-  @node_url "http://213.239.193.208:9053"
+  @node_url "https://ergfi.xyz:9443"
   @max_limit 16_384
   @default_limit 100
 

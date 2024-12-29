@@ -15,7 +15,7 @@ config :mempool_server,
 config :mempool_server, MempoolServer.Repo,
   username: "postgres",
   password: "password",
-  database: "mempool_server_dev",
+  database: "myapp_dev",
   hostname: "localhost",
   pool_size: 10
 
