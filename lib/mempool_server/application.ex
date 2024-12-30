@@ -17,6 +17,7 @@ defmodule MempoolServer.Application do
       MempoolServer.Repo,
       MempoolServerWeb.Endpoint,
       # Start the MempoolFetcher
+      MempoolServer.BoxCache,
       {MempoolServer.TransactionsCache, []},
       MempoolServer.MempoolFetcher
     ]
