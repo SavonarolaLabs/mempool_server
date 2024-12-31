@@ -37,9 +37,12 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # -----------------------------------------------------
-  # 1. Poll /info once per second.
-  #    - If lastSeenMessageTime changed => fetch mempool (unconfirmed) transactions.
-  #    - If previousFullHeaderId changed => fetch confirmed transactions from the block.
+  # Poll /info once per second. If lastSeenMessageTime
+  # has *not* changed, we do nothing at all.
+  # Otherwise:
+  #   - fetch mempool (unconfirmed) transactions
+  #   - if previousFullHeaderId changed => fetch confirmed transactions
+  #     else broadcast empty set for confirmed
   # -----------------------------------------------------
   defp poll_info(state) do
     url = "https://ergfi.xyz:9443/info"
@@ -47,40 +50,38 @@ defmodule MempoolServer.MempoolFetcher do
     case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
         with {:ok, info_data} <- Jason.decode(body) do
-          last_seen_message_time = info_data["lastSeenMessageTime"]
-          prev_full_header_id    = info_data["previousFullHeaderId"]
+          new_last_seen = info_data["lastSeenMessageTime"]
+          new_header_id = info_data["previousFullHeaderId"]
 
-          # 1) Possibly fetch Mempool TXs
-          unconfirmed_transactions =
-            if last_seen_message_time != state.last_seen_message_time do
-              fetch_and_enrich_mempool_transactions()
-            else
-              # If there's no change to lastSeenMessageTime,
-              # we can reuse the existing mempool from the cache.
-              # So we read from TransactionsCache:
-              TransactionsCache.get_all_transactions()
-            end
-
-          # 2) Possibly fetch Confirmed TXs
-          last_confirmed_transactions =
-            if prev_full_header_id != state.previous_full_header_id do
-              fetch_and_enrich_confirmed_transactions(prev_full_header_id)
-            else
-              # If header didn't change, we broadcast an empty set for confirmed
-              []
-            end
-
-          # 3) Broadcast both unconfirmed and confirmed in the **same** payload
-          broadcast_all_transactions(unconfirmed_transactions, last_confirmed_transactions)
-          broadcast_sigmausd_transactions(unconfirmed_transactions, last_confirmed_transactions)
-
-          # Update state
-          %{
+          # If lastSeenMessageTime did NOT change, do nothing
+          if new_last_seen == state.last_seen_message_time do
+            # No change => skip all fetching / broadcasting
+            Logger.debug("lastSeenMessageTime did not change, skipping any mempool fetch/broadcast.")
             state
-            | last_seen_message_time: last_seen_message_time,
-              previous_full_header_id: prev_full_header_id,
-              last_confirmed_transactions: last_confirmed_transactions
-          }
+          else
+            # lastSeenMessageTime changed => fetch & broadcast new mempool
+            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
+
+            # Possibly fetch newly confirmed transactions if the header changed
+            confirmed_txs =
+              if new_header_id != state.previous_full_header_id do
+                fetch_and_enrich_confirmed_transactions(new_header_id)
+              else
+                []
+              end
+
+            # Broadcast both unconfirmed and confirmed in the same payload
+            broadcast_all_transactions(unconfirmed_txs, confirmed_txs)
+            broadcast_sigmausd_transactions(unconfirmed_txs, confirmed_txs)
+
+            # Update state
+            %{
+              state
+              | last_seen_message_time: new_last_seen,
+                previous_full_header_id: new_header_id,
+                last_confirmed_transactions: confirmed_txs
+            }
+          end
         else
           _ ->
             Logger.error("Failed to decode /info response body or missing keys.")
@@ -98,10 +99,10 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # ------------------------------------------------------------------
-  # 2. Fetch & enrich Mempool Transactions
+  # Fetch & enrich Mempool Transactions
   # ------------------------------------------------------------------
   defp fetch_and_enrich_mempool_transactions do
-    # 1. Fetch all mempool transactions from node
+    # 1. Fetch all mempool transactions from the node
     transactions = fetch_all_mempool_transactions()
 
     # 2. Remove stale transactions from timestamp cache
@@ -141,7 +142,7 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # ------------------------------------------------------------------
-  # 3. Fetch & enrich Confirmed Transactions
+  # Fetch & enrich Confirmed Transactions
   # ------------------------------------------------------------------
   defp fetch_and_enrich_confirmed_transactions(previous_full_header_id) do
     url = "#{Constants.node_url()}/blocks/#{previous_full_header_id}/transactions"
@@ -149,13 +150,14 @@ defmodule MempoolServer.MempoolFetcher do
     case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
         case Jason.decode(body) do
+          # According to the updated structure,
+          # the response has => {"headerId": "...", "transactions": [...]}.
           {:ok, %{"headerId" => _header_id, "transactions" => confirmed_txs}} ->
-            # We have confirmed_txs in the "transactions" field.
-            # Let's enhance those transactions before returning them.
+            # Enhance (merge any box data)
             enhance_transactions(confirmed_txs)
 
           _ ->
-            Logger.error("Unexpected JSON structure when fetching block transactions.")
+            Logger.error("Unexpected JSON structure for block transactions.")
             []
         end
 
@@ -164,7 +166,6 @@ defmodule MempoolServer.MempoolFetcher do
         []
     end
   end
-
 
   # ------------------------------------------------------------------
   # Broadcast both unconfirmed & confirmed in the same message
@@ -181,11 +182,8 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   defp broadcast_sigmausd_transactions(unconfirmed, confirmed) do
-    sigmausd_unconfirmed =
-      Enum.filter(unconfirmed, &transaction_has_sigmausd_output?/1)
-
-    sigmausd_confirmed =
-      Enum.filter(confirmed, &transaction_has_sigmausd_output?/1)
+    sigmausd_unconfirmed = Enum.filter(unconfirmed, &transaction_has_sigmausd_output?/1)
+    sigmausd_confirmed   = Enum.filter(confirmed, &transaction_has_sigmausd_output?/1)
 
     MempoolServerWeb.Endpoint.broadcast!(
       "mempool:sigmausd_transactions",
@@ -197,7 +195,9 @@ defmodule MempoolServer.MempoolFetcher do
     )
   end
 
-  # --- Same helpers for fetching mempool, boxes, & enhancing ---
+  # ------------------------------------------------------------------
+  # Helpers for fetching mempool, boxes, & enhancing
+  # ------------------------------------------------------------------
 
   defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
     url = "#{Constants.node_url()}/transactions/unconfirmed?limit=10000&offset=#{offset}"
