@@ -7,6 +7,7 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.Constants
 
   @polling_interval 10_000
+  @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -46,7 +47,6 @@ defmodule MempoolServer.MempoolFetcher do
     BoxCache.remove_unobserved_boxes(all_box_ids)
 
     # 5. For each box_id, if not in cache, we need to fetch from the node
-    #    Instead of passing *all* box_ids to "fetch_boxes_by_ids", we only fetch the missing ones
     missing_box_ids =
       all_box_ids
       |> Enum.filter(fn box_id -> BoxCache.get_box(box_id) == nil end)
@@ -65,6 +65,9 @@ defmodule MempoolServer.MempoolFetcher do
       |> enhance_transactions()
       |> add_creation_timestamps()
 
+    # 8.5. Store the entire mempool transaction set in the TransactionsCache
+    TransactionsCache.put_all_transactions(enriched_transactions)
+
     # 9. Broadcast final results
     broadcast_all_transactions(enriched_transactions)
     broadcast_sigmausd_transactions(enriched_transactions)
@@ -73,7 +76,7 @@ defmodule MempoolServer.MempoolFetcher do
   defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
     url = "#{Constants.node_url()}/transactions/unconfirmed?limit=10000&offset=#{offset}"
 
-    case HTTPoison.get(url) do
+    case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
         {:ok, data} = Jason.decode(body)
 
@@ -105,7 +108,6 @@ defmodule MempoolServer.MempoolFetcher do
 
   defp fetch_boxes_by_ids([]), do: []
   defp fetch_boxes_by_ids(box_ids) do
-    # For big lists, split into chunks
     box_ids
     |> Enum.chunk_every(100)
     |> Enum.flat_map(&fetch_boxes_batch/1)
@@ -120,7 +122,7 @@ defmodule MempoolServer.MempoolFetcher do
 
     body = Jason.encode!(box_ids_chunk)
 
-    case HTTPoison.post(url, body, headers) do
+    case HTTPoison.post(url, body, headers, @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
         case Jason.decode(response_body) do
           {:ok, boxes} -> boxes
@@ -149,11 +151,9 @@ defmodule MempoolServer.MempoolFetcher do
         box_id = input["boxId"]
         case BoxCache.get_box(box_id) do
           nil ->
-            # Not in cache & presumably not fetched. Just return input as-is
             input
 
           box_data ->
-            # Merge box fields into input
             Map.merge(input, box_data)
         end
       end)
@@ -189,7 +189,8 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   defp broadcast_sigmausd_transactions(transactions) do
-    sigmausd_transactions = Enum.filter(transactions, &transaction_has_sigmausd_output?/1)
+    sigmausd_transactions =
+      Enum.filter(transactions, &transaction_has_sigmausd_output?/1)
 
     MempoolServerWeb.Endpoint.broadcast!(
       "mempool:sigmausd_transactions",
