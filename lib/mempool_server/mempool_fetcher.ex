@@ -6,72 +6,198 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.BoxCache
   alias MempoolServer.Constants
 
-  @polling_interval 10_000
+  # Poll /info every second
+  @polling_interval 1_000
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
 
   def start_link(_opts) do
-    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+    GenServer.start_link(
+      __MODULE__,
+      %{
+        last_seen_message_time: nil,
+        previous_full_header_id: nil,
+        # We'll keep the most recent block's confirmed transactions here
+        last_confirmed_transactions: []
+      },
+      name: __MODULE__
+    )
   end
 
   @impl true
-  def init(_state) do
+  def init(state) do
     schedule_poll()
-    {:ok, %{}}
+    {:ok, state}
   end
 
   @impl true
   def handle_info(:poll, state) do
-    fetch_and_broadcast()
+    new_state = poll_info(state)
     schedule_poll()
-    {:noreply, state}
+    {:noreply, new_state}
+  end
+
+  # -----------------------------------------------------
+  # 1. Poll /info once per second.
+  #    - If lastSeenMessageTime changed => fetch mempool (unconfirmed) transactions.
+  #    - If previousFullHeaderId changed => fetch confirmed transactions from the block.
+  # -----------------------------------------------------
+  defp poll_info(state) do
+    url = "https://ergfi.xyz:9443/info"
+
+    case HTTPoison.get(url, [], @timeout_opts) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
+        with {:ok, info_data} <- Jason.decode(body) do
+          last_seen_message_time = info_data["lastSeenMessageTime"]
+          prev_full_header_id    = info_data["previousFullHeaderId"]
+
+          # 1) Possibly fetch Mempool TXs
+          unconfirmed_transactions =
+            if last_seen_message_time != state.last_seen_message_time do
+              fetch_and_enrich_mempool_transactions()
+            else
+              # If there's no change to lastSeenMessageTime,
+              # we can reuse the existing mempool from the cache.
+              # So we read from TransactionsCache:
+              TransactionsCache.get_all_transactions()
+            end
+
+          # 2) Possibly fetch Confirmed TXs
+          last_confirmed_transactions =
+            if prev_full_header_id != state.previous_full_header_id do
+              fetch_and_enrich_confirmed_transactions(prev_full_header_id)
+            else
+              # If header didn't change, we broadcast an empty set for confirmed
+              []
+            end
+
+          # 3) Broadcast both unconfirmed and confirmed in the **same** payload
+          broadcast_all_transactions(unconfirmed_transactions, last_confirmed_transactions)
+          broadcast_sigmausd_transactions(unconfirmed_transactions, last_confirmed_transactions)
+
+          # Update state
+          %{
+            state
+            | last_seen_message_time: last_seen_message_time,
+              previous_full_header_id: prev_full_header_id,
+              last_confirmed_transactions: last_confirmed_transactions
+          }
+        else
+          _ ->
+            Logger.error("Failed to decode /info response body or missing keys.")
+            state
+        end
+
+      {:error, %HTTPoison.Error{reason: reason}} ->
+        Logger.error("Error fetching /info: #{inspect(reason)}")
+        state
+    end
   end
 
   defp schedule_poll do
     Process.send_after(self(), :poll, @polling_interval)
   end
 
-  defp fetch_and_broadcast do
-    # 1. Fetch all mempool transactions
+  # ------------------------------------------------------------------
+  # 2. Fetch & enrich Mempool Transactions
+  # ------------------------------------------------------------------
+  defp fetch_and_enrich_mempool_transactions do
+    # 1. Fetch all mempool transactions from node
     transactions = fetch_all_mempool_transactions()
 
-    # 2. Remove transactions from the timestamp cache that are no longer in mempool
+    # 2. Remove stale transactions from timestamp cache
     new_tx_ids = Enum.map(transactions, & &1["id"])
     TransactionsCache.remove_unobserved_transactions(new_tx_ids)
 
-    # 3. Gather all box IDs (both inputs & outputs) so we know what's relevant this cycle
+    # 3. Gather all relevant box IDs
     output_box_ids = collect_output_box_ids(transactions)
-    input_box_ids = collect_input_box_ids(transactions)
-    all_box_ids = (output_box_ids ++ input_box_ids) |> Enum.uniq()
+    input_box_ids  = collect_input_box_ids(transactions)
+    all_box_ids    = (output_box_ids ++ input_box_ids) |> Enum.uniq()
 
-    # 4. Remove from BoxCache any boxes not in current mempool
+    # 4. Remove stale boxes from BoxCache
     BoxCache.remove_unobserved_boxes(all_box_ids)
 
-    # 5. For each box_id, if not in cache, we need to fetch from the node
+    # 5. Identify which box IDs need fetching
     missing_box_ids =
       all_box_ids
       |> Enum.filter(fn box_id -> BoxCache.get_box(box_id) == nil end)
 
-    # 6. Fetch only the missing boxes via batch calls
+    # 6. Fetch missing boxes
     newly_fetched_boxes = fetch_boxes_by_ids(missing_box_ids)
 
-    # 7. Store newly fetched boxes in the BoxCache
+    # 7. Store them in BoxCache
     Enum.each(newly_fetched_boxes, fn box ->
       BoxCache.put_box(box["boxId"], box)
     end)
 
-    # 8. Enhance transactions: combine with BoxCache data & add creation timestamps
-    enriched_transactions =
+    # 8. Enhance & add creation timestamps
+    enriched =
       transactions
       |> enhance_transactions()
       |> add_creation_timestamps()
 
-    # 8.5. Store the entire mempool transaction set in the TransactionsCache
-    TransactionsCache.put_all_transactions(enriched_transactions)
-
-    # 9. Broadcast final results
-    broadcast_all_transactions(enriched_transactions)
-    broadcast_sigmausd_transactions(enriched_transactions)
+    # 9. Cache them so we can quickly reuse them
+    TransactionsCache.put_all_transactions(enriched)
+    enriched
   end
+
+  # ------------------------------------------------------------------
+  # 3. Fetch & enrich Confirmed Transactions
+  # ------------------------------------------------------------------
+  defp fetch_and_enrich_confirmed_transactions(previous_full_header_id) do
+    url = "#{Constants.node_url()}/blocks/#{previous_full_header_id}/transactions"
+
+    case HTTPoison.get(url, [], @timeout_opts) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
+        case Jason.decode(body) do
+          {:ok, %{"headerId" => _header_id, "transactions" => confirmed_txs}} ->
+            # We have confirmed_txs in the "transactions" field.
+            # Let's enhance those transactions before returning them.
+            enhance_transactions(confirmed_txs)
+
+          _ ->
+            Logger.error("Unexpected JSON structure when fetching block transactions.")
+            []
+        end
+
+      {:error, %HTTPoison.Error{reason: reason}} ->
+        Logger.error("Error fetching confirmed transactions: #{inspect(reason)}")
+        []
+    end
+  end
+
+
+  # ------------------------------------------------------------------
+  # Broadcast both unconfirmed & confirmed in the same message
+  # ------------------------------------------------------------------
+  defp broadcast_all_transactions(unconfirmed, confirmed) do
+    MempoolServerWeb.Endpoint.broadcast!(
+      "mempool:transactions",
+      "all_transactions",
+      %{
+        unconfirmed_transactions: unconfirmed,
+        confirmed_transactions: confirmed
+      }
+    )
+  end
+
+  defp broadcast_sigmausd_transactions(unconfirmed, confirmed) do
+    sigmausd_unconfirmed =
+      Enum.filter(unconfirmed, &transaction_has_sigmausd_output?/1)
+
+    sigmausd_confirmed =
+      Enum.filter(confirmed, &transaction_has_sigmausd_output?/1)
+
+    MempoolServerWeb.Endpoint.broadcast!(
+      "mempool:sigmausd_transactions",
+      "sigmausd_transactions",
+      %{
+        unconfirmed_transactions: sigmausd_unconfirmed,
+        confirmed_transactions: sigmausd_confirmed
+      }
+    )
+  end
+
+  # --- Same helpers for fetching mempool, boxes, & enhancing ---
 
   defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
     url = "#{Constants.node_url()}/transactions/unconfirmed?limit=10000&offset=#{offset}"
@@ -107,6 +233,7 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   defp fetch_boxes_by_ids([]), do: []
+
   defp fetch_boxes_by_ids(box_ids) do
     box_ids
     |> Enum.chunk_every(100)
@@ -149,12 +276,10 @@ defmodule MempoolServer.MempoolFetcher do
     enhanced_inputs =
       Enum.map(inputs, fn input ->
         box_id = input["boxId"]
-        case BoxCache.get_box(box_id) do
-          nil ->
-            input
 
-          box_data ->
-            Map.merge(input, box_data)
+        case BoxCache.get_box(box_id) do
+          nil -> input
+          box_data -> Map.merge(input, box_data)
         end
       end)
 
@@ -178,25 +303,6 @@ defmodule MempoolServer.MempoolFetcher do
 
       Map.put(tx, "creationTimestamp", creation_ts)
     end)
-  end
-
-  defp broadcast_all_transactions(transactions) do
-    MempoolServerWeb.Endpoint.broadcast!(
-      "mempool:transactions",
-      "all_transactions",
-      %{transactions: transactions}
-    )
-  end
-
-  defp broadcast_sigmausd_transactions(transactions) do
-    sigmausd_transactions =
-      Enum.filter(transactions, &transaction_has_sigmausd_output?/1)
-
-    MempoolServerWeb.Endpoint.broadcast!(
-      "mempool:sigmausd_transactions",
-      "sigmausd_transactions",
-      %{transactions: sigmausd_transactions}
-    )
   end
 
   defp transaction_has_sigmausd_output?(transaction) do
