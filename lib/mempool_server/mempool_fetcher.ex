@@ -58,9 +58,6 @@ defmodule MempoolServer.MempoolFetcher do
             # No change => skip all fetching / broadcasting
             state
           else
-            # lastSeenMessageTime changed => fetch & broadcast new mempool
-            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
-
             # Possibly fetch newly confirmed transactions if the header changed
             confirmed_txs =
               if new_header_id != state.previous_full_header_id do
@@ -68,6 +65,9 @@ defmodule MempoolServer.MempoolFetcher do
               else
                 []
               end
+
+            # lastSeenMessageTime changed => fetch & broadcast new mempool
+            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
 
             # Broadcast both unconfirmed and confirmed in the same payload
             broadcast_all_transactions(unconfirmed_txs, confirmed_txs)
