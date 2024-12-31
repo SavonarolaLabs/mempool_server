@@ -25,14 +25,14 @@ defmodule MempoolServerWeb.MempoolChannel do
   # Now we can safely push the data we want to send.
   def handle_info(:after_join_all, socket) do
     all_transactions = TransactionsCache.get_all_transactions()
-    push(socket, "all_transactions", %{transactions: all_transactions})
+    push(socket, "all_transactions", %{unconfirmed_transactions: all_transactions})
     {:noreply, socket}
   end
 
   # Similarly for sigmausd
   def handle_info(:after_join_sigmausd, socket) do
     sigmausd_transactions = TransactionsCache.get_sigmausd_transactions()
-    push(socket, "sigmausd_transactions", %{transactions: sigmausd_transactions})
+    push(socket, "sigmausd_transactions", %{unconfirmed_transactions: sigmausd_transactions})
     {:noreply, socket}
   end
 
