@@ -56,7 +56,6 @@ defmodule MempoolServer.MempoolFetcher do
           # If lastSeenMessageTime did NOT change, do nothing
           if new_last_seen == state.last_seen_message_time do
             # No change => skip all fetching / broadcasting
-            Logger.debug("lastSeenMessageTime did not change, skipping any mempool fetch/broadcast.")
             state
           else
             # lastSeenMessageTime changed => fetch & broadcast new mempool
