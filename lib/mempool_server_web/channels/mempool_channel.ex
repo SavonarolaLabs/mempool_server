@@ -3,40 +3,44 @@ defmodule MempoolServerWeb.MempoolChannel do
 
   alias MempoolServer.TransactionsCache
 
-  # When the client requests to join "mempool:transactions"
+  # -------------------------------------------
+  #  Join "mempool:transactions"
+  # -------------------------------------------
   def join("mempool:transactions", _message, socket) do
-    # 1) Queue up an internal message to ourselves (the channel process)
-    send(self(), :after_join_all)
-
-    # 2) Respond with {:ok, socket} so Phoenix knows the channel is joined
-    {:ok, socket}
-  end
-
-  # When the client requests to join "mempool:sigmausd_transactions"
-  def join("mempool:sigmausd_transactions", _message, socket) do
-    # 1) Queue up an internal message
-    send(self(), :after_join_sigmausd)
-
-    # 2) Respond with {:ok, socket}
-    {:ok, socket}
-  end
-
-  # Our "after_join_all" handler is called after the socket is joined.
-  # Now we can safely push the data we want to send.
-  def handle_info(:after_join_all, socket) do
+    # 1) Retrieve any unconfirmed transactions from your cache
     all_transactions = TransactionsCache.get_all_transactions()
-    push(socket, "all_transactions", %{unconfirmed_transactions: all_transactions})
-    {:noreply, socket}
+
+    # 2) Construct your initial payload.
+    #    Optionally include confirmed_transactions: [] if you like
+    reply_payload = %{
+      unconfirmed_transactions: all_transactions,
+      confirmed_transactions: []
+    }
+
+    # 3) Return the payload in the 'ok' tuple, so the client
+    #    sees it immediately in the .receive('ok', resp) callback
+    {:ok, reply_payload, socket}
   end
 
-  # Similarly for sigmausd
-  def handle_info(:after_join_sigmausd, socket) do
+  # -------------------------------------------
+  #  Join "mempool:sigmausd_transactions"
+  # -------------------------------------------
+  def join("mempool:sigmausd_transactions", _message, socket) do
+    # 1) Retrieve any SigmaUSD transactions from your cache
     sigmausd_transactions = TransactionsCache.get_sigmausd_transactions()
-    push(socket, "sigmausd_transactions", %{unconfirmed_transactions: sigmausd_transactions})
-    {:noreply, socket}
+
+    # 2) Build your initial payload
+    reply_payload = %{
+      unconfirmed_transactions: sigmausd_transactions,
+      confirmed_transactions: []
+    }
+
+    {:ok, reply_payload, socket}
   end
 
-  # Standard no-op for any inbound events
+  # -------------------------------------------
+  #  Handle inbound events (not used here)
+  # -------------------------------------------
   def handle_in(_event, _params, socket) do
     {:noreply, socket}
   end
