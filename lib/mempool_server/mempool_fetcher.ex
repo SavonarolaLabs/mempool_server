@@ -54,7 +54,7 @@ defmodule MempoolServer.MempoolFetcher do
           new_header_id = info_data["previousFullHeaderId"]
 
           # If lastSeenMessageTime did NOT change, do nothing
-          if new_last_seen == state.last_seen_message_time do
+          if new_last_seen == state.last_seen_message_time && new_header_id == state.previous_full_header_id do
             # No change => skip all fetching / broadcasting
             state
           else
