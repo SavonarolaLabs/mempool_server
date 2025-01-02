@@ -15,7 +15,7 @@ defmodule MempoolServer.MempoolFetcher do
       __MODULE__,
       %{
         last_seen_message_time: nil,
-        previous_full_header_id: nil,
+        best_full_header_id: nil,
         # We'll keep the most recent block's confirmed transactions here
         last_confirmed_transactions: []
       },
@@ -41,7 +41,7 @@ defmodule MempoolServer.MempoolFetcher do
   # has *not* changed, we do nothing at all.
   # Otherwise:
   #   - fetch mempool (unconfirmed) transactions
-  #   - if previousFullHeaderId changed => fetch confirmed transactions
+  #   - if bestFullHeaderId changed => fetch confirmed transactions
   #     else broadcast empty set for confirmed
   # -----------------------------------------------------
   defp poll_info(state) do
@@ -51,16 +51,16 @@ defmodule MempoolServer.MempoolFetcher do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
         with {:ok, info_data} <- Jason.decode(body) do
           new_last_seen = info_data["lastSeenMessageTime"]
-          new_header_id = info_data["previousFullHeaderId"]
+          new_header_id = info_data["bestFullHeaderId"]
 
           # If lastSeenMessageTime did NOT change, do nothing
-          #if new_last_seen == state.last_seen_message_time && new_header_id == state.previous_full_header_id do
+          #if new_last_seen == state.last_seen_message_time && new_header_id == state.best_full_header_id do
             # No change => skip all fetching / broadcasting
           #  state
           #else
             # Possibly fetch newly confirmed transactions if the header changed
             confirmed_txs =
-              if new_header_id != state.previous_full_header_id do
+              if new_header_id != state.best_full_header_id do
                 fetch_and_enrich_confirmed_transactions(new_header_id)
               else
                 []
@@ -77,7 +77,7 @@ defmodule MempoolServer.MempoolFetcher do
             %{
               state
               | last_seen_message_time: new_last_seen,
-                previous_full_header_id: new_header_id,
+                best_full_header_id: new_header_id,
                 last_confirmed_transactions: confirmed_txs
             }
           #end
@@ -143,8 +143,8 @@ defmodule MempoolServer.MempoolFetcher do
   # ------------------------------------------------------------------
   # Fetch & enrich Confirmed Transactions
   # ------------------------------------------------------------------
-  defp fetch_and_enrich_confirmed_transactions(previous_full_header_id) do
-    url = "#{Constants.node_url()}/blocks/#{previous_full_header_id}/transactions"
+  defp fetch_and_enrich_confirmed_transactions(best_full_header_id) do
+    url = "#{Constants.node_url()}/blocks/#{best_full_header_id}/transactions"
 
     case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
