@@ -54,10 +54,10 @@ defmodule MempoolServer.MempoolFetcher do
           new_header_id = info_data["previousFullHeaderId"]
 
           # If lastSeenMessageTime did NOT change, do nothing
-          if new_last_seen == state.last_seen_message_time && new_header_id == state.previous_full_header_id do
+          #if new_last_seen == state.last_seen_message_time && new_header_id == state.previous_full_header_id do
             # No change => skip all fetching / broadcasting
-            state
-          else
+          #  state
+          #else
             # Possibly fetch newly confirmed transactions if the header changed
             confirmed_txs =
               if new_header_id != state.previous_full_header_id do
@@ -80,7 +80,7 @@ defmodule MempoolServer.MempoolFetcher do
                 previous_full_header_id: new_header_id,
                 last_confirmed_transactions: confirmed_txs
             }
-          end
+          #end
         else
           _ ->
             Logger.error("Failed to decode /info response body or missing keys.")
