@@ -70,8 +70,8 @@ defmodule MempoolServer.MempoolFetcher do
             unconfirmed_txs = fetch_and_enrich_mempool_transactions()
 
             # Broadcast both unconfirmed and confirmed in the same payload
-            broadcast_all_transactions(unconfirmed_txs, confirmed_txs)
-            broadcast_sigmausd_transactions(unconfirmed_txs, confirmed_txs)
+            broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
+            broadcast_sigmausd_transactions(unconfirmed_txs, confirmed_txs, info_data)
 
             # Update state
             %{
@@ -169,18 +169,19 @@ defmodule MempoolServer.MempoolFetcher do
   # ------------------------------------------------------------------
   # Broadcast both unconfirmed & confirmed in the same message
   # ------------------------------------------------------------------
-  defp broadcast_all_transactions(unconfirmed, confirmed) do
+  defp broadcast_all_transactions(unconfirmed, confirmed, info_data) do
     MempoolServerWeb.Endpoint.broadcast!(
       "mempool:transactions",
       "all_transactions",
       %{
         unconfirmed_transactions: unconfirmed,
-        confirmed_transactions: confirmed
+        confirmed_transactions: confirmed,
+        info: info_data
       }
     )
   end
 
-  defp broadcast_sigmausd_transactions(unconfirmed, confirmed) do
+  defp broadcast_sigmausd_transactions(unconfirmed, confirmed, info_data) do
     sigmausd_unconfirmed = Enum.filter(unconfirmed, &transaction_has_sigmausd_output?/1)
     sigmausd_confirmed   = Enum.filter(confirmed, &transaction_has_sigmausd_output?/1)
 
@@ -189,7 +190,8 @@ defmodule MempoolServer.MempoolFetcher do
       "sigmausd_transactions",
       %{
         unconfirmed_transactions: sigmausd_unconfirmed,
-        confirmed_transactions: sigmausd_confirmed
+        confirmed_transactions: sigmausd_confirmed,
+        info: info_data
       }
     )
   end
