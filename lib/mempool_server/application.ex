@@ -15,11 +15,12 @@ defmodule MempoolServer.Application do
       # {MempoolServer.Worker, arg},
       # Start to serve requests, typically the last entry
       #MempoolServer.Repo,
-      MempoolServerWeb.Endpoint,
       # Start the MempoolFetcher
       MempoolServer.BoxCache,
+      MempoolServer.TxHistoryCache,
       {MempoolServer.TransactionsCache, []},
-      MempoolServer.MempoolFetcher
+      MempoolServer.MempoolFetcher,
+      MempoolServerWeb.Endpoint,
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

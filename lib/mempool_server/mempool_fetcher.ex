@@ -5,28 +5,34 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.TransactionsCache
   alias MempoolServer.BoxCache
   alias MempoolServer.Constants
+  alias MempoolServer.TxHistoryCache
 
-  # Poll /info every second
   @polling_interval 1_000
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
 
   def start_link(_opts) do
-    GenServer.start_link(
-      __MODULE__,
-      %{
-        last_seen_message_time: nil,
-        best_full_header_id: nil,
-        # We'll keep the most recent block's confirmed transactions here
-        last_confirmed_transactions: []
-      },
-      name: __MODULE__
-    )
+    GenServer.start_link(__MODULE__, %{
+      last_seen_message_time: nil,
+      best_full_header_id: nil,
+      last_confirmed_transactions: []
+    }, name: __MODULE__)
   end
 
   @impl true
   def init(state) do
+    # Schedule our periodic poll
     schedule_poll()
-    {:ok, state}
+
+    # We use :continue so that init/1 returns immediately,
+    # then do the "history load" in handle_continue/2
+    {:ok, state, {:continue, :init_history}}
+  end
+
+  @impl true
+  def handle_continue(:init_history, state) do
+    # Force the TxHistoryCache to load (and thereby create its ETS table) once.
+    TxHistoryCache.update_history("sigmausd_transactions")
+    {:noreply, state}
   end
 
   @impl true
@@ -38,11 +44,11 @@ defmodule MempoolServer.MempoolFetcher do
 
   # -----------------------------------------------------
   # Poll /info once per second. If lastSeenMessageTime
-  # has *not* changed, we do nothing at all.
+  # has *not* changed, do nothing at all.
   # Otherwise:
   #   - fetch mempool (unconfirmed) transactions
   #   - if bestFullHeaderId changed => fetch confirmed transactions
-  #     else broadcast empty set for confirmed
+  #   - if bestFullHeaderId changed => update TxHistory
   # -----------------------------------------------------
   defp poll_info(state) do
     url = "https://ergfi.xyz:9443/info"
@@ -53,9 +59,9 @@ defmodule MempoolServer.MempoolFetcher do
           new_last_seen = info_data["lastSeenMessageTime"]
           new_header_id = info_data["bestFullHeaderId"]
 
-          # If lastSeenMessageTime did NOT change, do nothing
-          if new_last_seen == state.last_seen_message_time && new_header_id == state.best_full_header_id do
-            # No change => skip all fetching / broadcasting
+          # If neither changed, do nothing
+          if new_last_seen == state.last_seen_message_time and
+             new_header_id == state.best_full_header_id do
             state
           else
             # Possibly fetch newly confirmed transactions if the header changed
@@ -66,14 +72,17 @@ defmodule MempoolServer.MempoolFetcher do
                 []
               end
 
-            # lastSeenMessageTime changed => fetch & broadcast new mempool
-            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
+            # If bestFullHeaderId changed, update the TxHistory
+            if new_header_id != state.best_full_header_id do
+              TxHistoryCache.update_history("sigmausd_transactions")
+            end
 
-            # Broadcast both unconfirmed and confirmed in the same payload
+            # Fetch & broadcast new mempool transactions
+            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
             broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
             broadcast_sigmausd_transactions(unconfirmed_txs, confirmed_txs, info_data)
 
-            # Update state
+            # Update local state
             %{
               state
               | last_seen_message_time: new_last_seen,
@@ -101,7 +110,7 @@ defmodule MempoolServer.MempoolFetcher do
   # Fetch & enrich Mempool Transactions
   # ------------------------------------------------------------------
   defp fetch_and_enrich_mempool_transactions do
-    # 1. Fetch all mempool transactions from the node
+    # 1. Fetch all mempool transactions
     transactions = fetch_all_mempool_transactions()
 
     # 2. Remove stale transactions from timestamp cache
@@ -149,10 +158,7 @@ defmodule MempoolServer.MempoolFetcher do
     case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
         case Jason.decode(body) do
-          # According to the updated structure,
-          # the response has => {"headerId": "...", "transactions": [...]}.
           {:ok, %{"headerId" => _header_id, "transactions" => confirmed_txs}} ->
-            # Enhance (merge any box data)
             enhance_transactions(confirmed_txs)
 
           _ ->
@@ -167,7 +173,7 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # ------------------------------------------------------------------
-  # Broadcast both unconfirmed & confirmed in the same message
+  # Broadcast
   # ------------------------------------------------------------------
   defp broadcast_all_transactions(unconfirmed, confirmed, info_data) do
     MempoolServerWeb.Endpoint.broadcast!(
@@ -197,9 +203,8 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # ------------------------------------------------------------------
-  # Helpers for fetching mempool, boxes, & enhancing
+  # Helpers
   # ------------------------------------------------------------------
-
   defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
     url = "#{Constants.node_url()}/transactions/unconfirmed?limit=10000&offset=#{offset}"
 
@@ -247,7 +252,6 @@ defmodule MempoolServer.MempoolFetcher do
       {"Content-Type", "application/json"},
       {"Accept", "application/json"}
     ]
-
     body = Jason.encode!(box_ids_chunk)
 
     case HTTPoison.post(url, body, headers, @timeout_opts) do

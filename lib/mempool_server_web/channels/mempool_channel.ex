@@ -2,6 +2,7 @@ defmodule MempoolServerWeb.MempoolChannel do
   use Phoenix.Channel
 
   alias MempoolServer.TransactionsCache
+  alias MempoolServer.TxHistoryCache
 
   # -------------------------------------------
   #  Join "mempool:transactions"
@@ -11,14 +12,12 @@ defmodule MempoolServerWeb.MempoolChannel do
     all_transactions = TransactionsCache.get_all_transactions()
 
     # 2) Construct your initial payload.
-    #    Optionally include confirmed_transactions: [] if you like
     reply_payload = %{
       unconfirmed_transactions: all_transactions,
       confirmed_transactions: []
     }
 
-    # 3) Return the payload in the 'ok' tuple, so the client
-    #    sees it immediately in the .receive('ok', resp) callback
+    # 3) Return the payload in the 'ok' tuple
     {:ok, reply_payload, socket}
   end
 
@@ -26,13 +25,17 @@ defmodule MempoolServerWeb.MempoolChannel do
   #  Join "mempool:sigmausd_transactions"
   # -------------------------------------------
   def join("mempool:sigmausd_transactions", _message, socket) do
-    # 1) Retrieve any SigmaUSD transactions from your cache
+    # 1) Retrieve any unconfirmed SigmaUSD transactions from your transaction cache
     sigmausd_transactions = TransactionsCache.get_sigmausd_transactions()
 
-    # 2) Build your initial payload
+    # 2) Retrieve the last 10 cached transactions ("history") from TxHistoryCache
+    sigmausd_history = TxHistoryCache.get_recent("sigmausd_transactions")
+
+    # 3) Build your initial payload including "history"
     reply_payload = %{
       unconfirmed_transactions: sigmausd_transactions,
-      confirmed_transactions: []
+      confirmed_transactions: [],
+      history: sigmausd_history
     }
 
     {:ok, reply_payload, socket}
