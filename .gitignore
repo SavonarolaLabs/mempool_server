@@ -37,3 +37,5 @@ cover/
 dialyxir_erlangplt
 dialyxir_plt
 .erlang.plt
+
+NOTES.md
