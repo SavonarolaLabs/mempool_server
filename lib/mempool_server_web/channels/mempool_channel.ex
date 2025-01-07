@@ -3,42 +3,42 @@ defmodule MempoolServerWeb.MempoolChannel do
 
   alias MempoolServer.TransactionsCache
   alias MempoolServer.TxHistoryCache
+  alias MempoolServer.Constants
 
   # -------------------------------------------
   #  Join "mempool:transactions"
   # -------------------------------------------
   def join("mempool:transactions", _message, socket) do
-    # 1) Retrieve any unconfirmed transactions from your cache
     all_transactions = TransactionsCache.get_all_transactions()
 
-    # 2) Construct your initial payload.
     reply_payload = %{
       unconfirmed_transactions: all_transactions,
       confirmed_transactions: []
     }
 
-    # 3) Return the payload in the 'ok' tuple
     {:ok, reply_payload, socket}
   end
 
   # -------------------------------------------
-  #  Join "mempool:sigmausd_transactions"
+  #  Join filtered transaction channels
   # -------------------------------------------
-  def join("mempool:sigmausd_transactions", _message, socket) do
-    # 1) Retrieve any unconfirmed SigmaUSD transactions from your transaction cache
-    sigmausd_transactions = TransactionsCache.get_sigmausd_transactions()
+  def join("mempool:" <> name, _message, socket) do
+    case Enum.find(Constants.filtered_transactions(), fn ft -> ft.name == name end) do
+      nil ->
+        {:error, %{reason: "Invalid channel name"}}
 
-    # 2) Retrieve the last 10 cached transactions ("history") from TxHistoryCache
-    sigmausd_history = TxHistoryCache.get_recent("sigmausd_transactions")
+      %{ergo_trees: ergo_trees} ->
+        unconfirmed_transactions = TransactionsCache.get_transactions_by_ergo_trees(ergo_trees)
+        history = TxHistoryCache.get_recent(name)
 
-    # 3) Build your initial payload including "history"
-    reply_payload = %{
-      unconfirmed_transactions: sigmausd_transactions,
-      confirmed_transactions: [],
-      history: sigmausd_history
-    }
+        reply_payload = %{
+          unconfirmed_transactions: unconfirmed_transactions,
+          confirmed_transactions: [],
+          history: history
+        }
 
-    {:ok, reply_payload, socket}
+        {:ok, reply_payload, socket}
+    end
   end
 
   # -------------------------------------------

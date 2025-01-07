@@ -7,8 +7,6 @@ defmodule MempoolServer.TransactionsCache do
 
   use GenServer
 
-  alias MempoolServer.Constants
-
   @name __MODULE__
 
   ## ------------------------------------------------------------------
@@ -16,7 +14,6 @@ defmodule MempoolServer.TransactionsCache do
   ## ------------------------------------------------------------------
 
   def start_link(_opts \\ []) do
-    # We'll initialize our state to hold a map of timestamps and a map of transactions.
     GenServer.start_link(__MODULE__, %{timestamps: %{}, transactions: %{}}, name: @name)
   end
 
@@ -57,10 +54,10 @@ defmodule MempoolServer.TransactionsCache do
   end
 
   @doc """
-  Returns only the SigmaUSD transactions from the current mempool cache.
+  Returns transactions matching the given ergo_trees.
   """
-  def get_sigmausd_transactions() do
-    GenServer.call(@name, :get_sigmausd_transactions)
+  def get_transactions_by_ergo_trees(ergo_trees) do
+    GenServer.call(@name, {:get_transactions_by_ergo_trees, ergo_trees})
   end
 
   ## ------------------------------------------------------------------
@@ -91,18 +88,17 @@ defmodule MempoolServer.TransactionsCache do
   end
 
   @impl true
-  def handle_call(:get_sigmausd_transactions, _from, state) do
-    sigmausd_txs =
+  def handle_call({:get_transactions_by_ergo_trees, ergo_trees}, _from, state) do
+    filtered_txs =
       state.transactions
       |> Map.values()
-      |> Enum.filter(&transaction_has_sigmausd_output?/1)
+      |> Enum.filter(fn tx -> transaction_has_output?(tx, ergo_trees) end)
 
-    {:reply, sigmausd_txs, state}
+    {:reply, filtered_txs, state}
   end
 
   @impl true
   def handle_call({:put_all_transactions, transactions}, _from, state) do
-    # Insert or update each transaction by its tx_id
     updated_transactions =
       Enum.reduce(transactions, state.transactions, fn tx, acc ->
         Map.put(acc, tx["id"], tx)
@@ -114,11 +110,9 @@ defmodule MempoolServer.TransactionsCache do
 
   @impl true
   def handle_cast({:remove_unobserved, active_tx_ids}, state) do
-    # 1) Remove timestamps for unobserved tx_ids
     new_timestamps =
       Map.drop(state.timestamps, Map.keys(state.timestamps) -- active_tx_ids)
 
-    # 2) Remove actual transaction data for unobserved tx_ids
     new_transactions =
       Map.drop(state.transactions, Map.keys(state.transactions) -- active_tx_ids)
 
@@ -130,10 +124,8 @@ defmodule MempoolServer.TransactionsCache do
   ## Helpers
   ## ------------------------------------------------------------------
 
-  defp transaction_has_sigmausd_output?(transaction) do
+  defp transaction_has_output?(transaction, ergo_trees) do
     outputs = transaction["outputs"] || []
-    Enum.any?(outputs, fn output ->
-      output["ergoTree"] == Constants.sigmausd_ergo_tree()
-    end)
+    Enum.any?(outputs, fn output -> output["ergoTree"] in ergo_trees end)
   end
 end

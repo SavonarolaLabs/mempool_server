@@ -80,7 +80,7 @@ defmodule MempoolServer.MempoolFetcher do
             # Fetch & broadcast new mempool transactions
             unconfirmed_txs = fetch_and_enrich_mempool_transactions()
             broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
-            broadcast_sigmausd_transactions(unconfirmed_txs, confirmed_txs, info_data)
+            broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
 
             # Update local state
             %{
@@ -187,19 +187,21 @@ defmodule MempoolServer.MempoolFetcher do
     )
   end
 
-  defp broadcast_sigmausd_transactions(unconfirmed, confirmed, info_data) do
-    sigmausd_unconfirmed = Enum.filter(unconfirmed, &transaction_has_sigmausd_output?/1)
-    sigmausd_confirmed   = Enum.filter(confirmed, &transaction_has_sigmausd_output?/1)
-
-    MempoolServerWeb.Endpoint.broadcast!(
-      "mempool:sigmausd_transactions",
-      "sigmausd_transactions",
-      %{
-        unconfirmed_transactions: sigmausd_unconfirmed,
-        confirmed_transactions: sigmausd_confirmed,
-        info: info_data
-      }
-    )
+  defp broadcast_filtered_transactions(unconfirmed, confirmed, info_data) do
+    Enum.each(Constants.filtered_transactions(), fn %{name: name, ergo_trees: trees} ->
+      unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, trees))
+      confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, trees))
+  
+      MempoolServerWeb.Endpoint.broadcast!(
+        "mempool:#{name}",
+        name,
+        %{
+          unconfirmed_transactions: unconfirmed_filtered,
+          confirmed_transactions: confirmed_filtered,
+          info: info_data
+        }
+      )
+    end)
   end
 
   # ------------------------------------------------------------------
@@ -310,10 +312,10 @@ defmodule MempoolServer.MempoolFetcher do
     end)
   end
 
-  defp transaction_has_sigmausd_output?(transaction) do
+  defp transaction_has_output?(transaction, ergo_trees) do
     outputs = transaction["outputs"] || []
     Enum.any?(outputs, fn output ->
-      output["ergoTree"] == Constants.sigmausd_ergo_tree()
+      output["ergoTree"] in ergo_trees
     end)
   end
 end
