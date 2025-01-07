@@ -27,19 +27,27 @@ defmodule MempoolServer.TxHistoryCache do
     case Enum.find(Constants.filtered_transactions(), fn ft -> ft.name == name end) do
       nil ->
         :ok
-
-      %{ergo_trees: ergo_trees} ->
-        case fetch_transactions_by_ergo_trees(ergo_trees) do
-          {:ok, new_txs} ->
-            store_transactions(name, new_txs)
+  
+      %{addresses: addresses} ->
+        addresses
+        |> Enum.reduce({:ok, []}, fn address, {:ok, acc} ->
+          case fetch_transactions_by_address(address) do
+            {:ok, new_txs} -> {:ok, acc ++ new_txs}
+            :error -> :error
+          end
+        end)
+        |> case do
+          {:ok, all_txs} ->
+            store_transactions(name, all_txs)
             :ok
-
+  
           :error ->
             Logger.error("[TxHistoryCache] Failed to update history for #{name}.")
             :error
         end
     end
   end
+  
 
   @doc """
   Retrieve the recently cached transactions for a given transaction name.
@@ -77,13 +85,13 @@ defmodule MempoolServer.TxHistoryCache do
     :ok
   end
 
-  defp fetch_transactions_by_ergo_trees(ergo_trees) do
-    url = "https://ergfi.xyz:9443/blockchain/transaction/byErgoTrees?offset=0&limit=10"
+  defp fetch_transactions_by_address(address) do
+    url = "https://ergfi.xyz:9443/blockchain/transaction/byAddress?offset=0&limit=10"
     headers = [
       {"accept", "application/json"},
       {"content-type", "application/json"}
     ]
-    body = Jason.encode!(%{ergoTrees: ergo_trees})
+    body = Jason.encode!(address)
 
     case HTTPoison.post(url, body, headers, @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
