@@ -8,15 +8,41 @@ defmodule MempoolServerWeb.MempoolChannel do
 
   # -------------------------------------------
   #  Join "mempool:oracle_boxes"
-  # -------------------------------------------
+  # -------------------------------------------  
   def join("mempool:oracle_boxes", _message, socket) do
+    # Retrieve confirmed boxes
     all_boxes = BoxHistoryCache.get_all_boxes()
 
-    reply_payload =
+    # Prepare confirmed_<name>
+    confirmed_payload =
       all_boxes
       |> Enum.reduce(%{}, fn {name, boxes}, acc ->
         Map.put(acc, "confirmed_#{name}", boxes)
       end)
+
+    # Retrieve unconfirmed boxes by matching token IDs in outputs
+    unconfirmed_payload =
+      Constants.boxes_by_token_id()
+      |> Enum.reduce(%{}, fn %{name: name, token_id: token_id}, acc ->
+        transactions = TransactionsCache.get_all_transactions()
+        unconfirmed_boxes =
+          transactions
+          |> Enum.flat_map(fn tx ->
+            tx["outputs"] || []
+          end)
+          |> Enum.filter(fn output ->
+            Enum.any?(output["assets"] || [], fn asset ->
+              asset["tokenId"] == token_id
+            end)
+          end)
+
+        Map.put(acc, "unconfirmed_#{name}", unconfirmed_boxes)
+      end)
+
+    # Merge confirmed and unconfirmed payloads
+    reply_payload =
+      confirmed_payload
+      |> Map.merge(unconfirmed_payload)
       |> Map.put("unconfirmed_boxes", [])
 
     {:ok, reply_payload, socket}
