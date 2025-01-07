@@ -19,6 +19,7 @@ defmodule MempoolServer.Application do
       MempoolServer.BoxCache,
       MempoolServer.TxHistoryCache,
       {MempoolServer.TransactionsCache, []},
+      MempoolServer.BoxHistoryCache,
       MempoolServer.MempoolFetcher,
       MempoolServerWeb.Endpoint,
     ]

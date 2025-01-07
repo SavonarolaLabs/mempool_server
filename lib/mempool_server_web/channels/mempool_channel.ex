@@ -3,7 +3,22 @@ defmodule MempoolServerWeb.MempoolChannel do
 
   alias MempoolServer.TransactionsCache
   alias MempoolServer.TxHistoryCache
+  alias MempoolServer.BoxHistoryCache
   alias MempoolServer.Constants
+
+  # -------------------------------------------
+  #  Join "mempool:oracle_boxes"
+  # -------------------------------------------
+  def join("mempool:oracle_boxes", _message, socket) do
+    all_boxes = BoxHistoryCache.get_all_boxes()
+
+    reply_payload = %{
+      unconfirmed_boxes: [],
+      confirmed_boxes: all_boxes
+    }
+
+    {:ok, reply_payload, socket}
+  end
 
   # -------------------------------------------
   #  Join "mempool:transactions"

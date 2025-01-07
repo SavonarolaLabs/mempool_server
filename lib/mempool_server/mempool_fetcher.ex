@@ -6,6 +6,7 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.BoxCache
   alias MempoolServer.Constants
   alias MempoolServer.TxHistoryCache
+  alias MempoolServer.BoxHistoryCache
 
   @polling_interval 1_000
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
@@ -32,6 +33,7 @@ defmodule MempoolServer.MempoolFetcher do
   def handle_continue(:init_history, state) do
     # Force the TxHistoryCache to load (and thereby create its ETS table) once.
     TxHistoryCache.update_history("sigmausd_transactions")
+    BoxHistoryCache.update_all_history()
     {:noreply, state}
   end
 
@@ -75,6 +77,7 @@ defmodule MempoolServer.MempoolFetcher do
             # If bestFullHeaderId changed, update the TxHistory
             if new_header_id != state.best_full_header_id do
               TxHistoryCache.update_history("sigmausd_transactions")
+              BoxHistoryCache.update_all_history()
             end
 
             # Fetch & broadcast new mempool transactions

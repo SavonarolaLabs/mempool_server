@@ -12,12 +12,28 @@ defmodule MempoolServer.TxHistoryCache do
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
 
   # ----------------------------------------------------------------
-  # Public API
+  # GenServer callbacks
   # ----------------------------------------------------------------
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
+
+  def init(state) do
+    :ets.new(@table_name, [
+      :named_table,
+      :set,
+      :public,
+      {:read_concurrency, true}
+    ])
+
+    {:ok, state}
+  end
+
+  # ----------------------------------------------------------------
+  # Public API
+  # ----------------------------------------------------------------
+
 
   @doc """
   Update the TxHistory for the given transaction name.
@@ -57,21 +73,6 @@ defmodule MempoolServer.TxHistoryCache do
       [{^name, txs}] -> txs
       [] -> []
     end
-  end
-
-  # ----------------------------------------------------------------
-  # GenServer callbacks
-  # ----------------------------------------------------------------
-
-  def init(state) do
-    :ets.new(@table_name, [
-      :named_table,
-      :set,
-      :public,
-      {:read_concurrency, true}
-    ])
-
-    {:ok, state}
   end
 
   # ----------------------------------------------------------------
