@@ -40,10 +40,7 @@ defmodule MempoolServerWeb.MempoolChannel do
       end)
 
     # Merge confirmed and unconfirmed payloads
-    reply_payload =
-      confirmed_payload
-      |> Map.merge(unconfirmed_payload)
-      |> Map.put("unconfirmed_boxes", [])
+    reply_payload = Map.merge(confirmed_payload, unconfirmed_payload)
 
     {:ok, reply_payload, socket}
   end
