@@ -72,10 +72,10 @@ defmodule MempoolServer.Constants do
 
     @boxes_by_token_id [
       %{
-        name: "price_erg_usd",
+        name: "erg_usd",
         token_id: "011d3364de07e5a26f0c4eef0852cddb387039a921b7154ef3cab22c6eda887f"
       },%{
-        name: "price_erg_xau",
+        name: "erg_xau",
         token_id: "3c45f29a5165b030fdb5eaf5d81f8108f9d8f507b31487dd51f4ae08fe07cf4a"
       }
     ]

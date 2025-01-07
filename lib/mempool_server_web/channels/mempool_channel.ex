@@ -12,10 +12,12 @@ defmodule MempoolServerWeb.MempoolChannel do
   def join("mempool:oracle_boxes", _message, socket) do
     all_boxes = BoxHistoryCache.get_all_boxes()
 
-    reply_payload = %{
-      unconfirmed_boxes: [],
-      confirmed_boxes: all_boxes
-    }
+    reply_payload =
+      all_boxes
+      |> Enum.reduce(%{}, fn {name, boxes}, acc ->
+        Map.put(acc, "confirmed_#{name}", boxes)
+      end)
+      |> Map.put("unconfirmed_boxes", [])
 
     {:ok, reply_payload, socket}
   end
