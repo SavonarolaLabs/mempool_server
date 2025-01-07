@@ -51,7 +51,7 @@ defmodule MempoolServer.MempoolFetcher do
   #   - if bestFullHeaderId changed => update TxHistory
   # -----------------------------------------------------
   defp poll_info(state) do
-    url = "https://ergfi.xyz:9443/info"
+    url = "#{Constants.node_url()}/info"
 
     case HTTPoison.get(url, [], @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->

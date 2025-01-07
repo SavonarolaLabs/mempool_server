@@ -86,7 +86,7 @@ defmodule MempoolServer.TxHistoryCache do
   end
 
   defp fetch_transactions_by_address(address) do
-    url = "https://ergfi.xyz:9443/blockchain/transaction/byAddress?offset=0&limit=10"
+    url = "#{Constants.node_url()}/blockchain/transaction/byAddress?offset=0&limit=10"
     headers = [
       {"accept", "application/json"},
       {"content-type", "application/json"}
