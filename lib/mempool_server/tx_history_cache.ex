@@ -20,42 +20,42 @@ defmodule MempoolServer.TxHistoryCache do
   end
 
   @doc """
-  Update the TxHistory for the given address name.
-  Currently only supports "sigmausd_transactions".
+  Update the TxHistory for the given transaction name.
+  Supports multiple filtered transaction types from Constants.
   """
-  def update_history("sigmausd_transactions") do
-    address = Constants.sigma_bank_address()
-
-    case fetch_transactions_for_address(address) do
-      {:ok, new_txs} ->
-        store_transactions(address, new_txs)
+  def update_history(name) do
+    case Enum.find(Constants.filtered_transactions(), fn ft -> ft.name == name end) do
+      nil ->
         :ok
 
-      :error ->
-        Logger.error("[TxHistoryCache] Failed to update history for sigmausd_transactions.")
-        :error
+      %{ergo_trees: ergo_trees} ->
+        case fetch_transactions_by_ergo_trees(ergo_trees) do
+          {:ok, new_txs} ->
+            store_transactions(name, new_txs)
+            :ok
+
+          :error ->
+            Logger.error("[TxHistoryCache] Failed to update history for #{name}.")
+            :error
+        end
     end
   end
 
-  def update_history(_other), do: :ok
-
   @doc """
-  Retrieve the recently cached transactions for a given address name.
-  Currently only supports "sigmausd_transactions".
+  Retrieve the recently cached transactions for a given transaction name.
   """
-  def get_recent("sigmausd_transactions") do
-    address = Constants.sigma_bank_address()
-    get_transactions(address)
+  def get_recent(name) do
+    case :ets.lookup(@table_name, name) do
+      [{^name, txs}] -> txs
+      [] -> []
+    end
   end
-
-  def get_recent(_other), do: []
 
   # ----------------------------------------------------------------
   # GenServer callbacks
   # ----------------------------------------------------------------
 
   def init(state) do
-    # Create an ETS table for storing the transactions if it doesn't already exist
     :ets.new(@table_name, [
       :named_table,
       :set,
@@ -70,37 +70,24 @@ defmodule MempoolServer.TxHistoryCache do
   # Internal helpers
   # ----------------------------------------------------------------
 
-  defp store_transactions(address, new_txs) when is_binary(address) and is_list(new_txs) do
-    # If there is already something stored, fetch it
-    existing = get_transactions(address)
-
-    # We'll place new transactions *before* existing, then keep only up to 10
+  defp store_transactions(name, new_txs) when is_binary(name) and is_list(new_txs) do
+    existing = get_recent(name)
     updated = (new_txs ++ existing) |> Enum.take(10)
-
-    :ets.insert(@table_name, {address, updated})
+    :ets.insert(@table_name, {name, updated})
     :ok
   end
 
-  defp get_transactions(address) do
-    case :ets.lookup(@table_name, address) do
-      [{^address, txs}] -> txs
-      [] -> []
-    end
-  end
-
-  defp fetch_transactions_for_address(address) do
-    url = "https://ergfi.xyz:9443/blockchain/transaction/byAddress?offset=0&limit=10"
+  defp fetch_transactions_by_ergo_trees(ergo_trees) do
+    url = "https://ergfi.xyz:9443/blockchain/transaction/byErgoTrees?offset=0&limit=10"
     headers = [
       {"accept", "application/json"},
       {"content-type", "application/json"}
     ]
-    # The endpoint requires a POST with the address in JSON form
-    body = Jason.encode!(address)
+    body = Jason.encode!(%{ergoTrees: ergo_trees})
 
     case HTTPoison.post(url, body, headers, @timeout_opts) do
       {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
         case Jason.decode(response_body) do
-          # Note: "items" is the array of transactions
           {:ok, %{"items" => items}} when is_list(items) ->
             {:ok, items}
 
