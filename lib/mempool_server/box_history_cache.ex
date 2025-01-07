@@ -21,9 +21,7 @@ defmodule MempoolServer.BoxHistoryCache do
   
     def get_all_boxes() do
       :ets.tab2list(@table_name)
-      |> Enum.flat_map(fn {_name, boxes} -> boxes end)
     end
-    
   
     def update_history(name) do
       case Constants.boxes_by_token_id() |> Enum.find(&(&1.name == name)) do
