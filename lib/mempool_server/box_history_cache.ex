@@ -48,16 +48,20 @@ defmodule MempoolServer.BoxHistoryCache do
     defp fetch_confirmed_box_by_token_id(token_id) do
       base_url = Constants.node_url()
       url = "#{base_url}/blockchain/box/unspent/byTokenId/#{token_id}?offset=0&limit=1&sortDirection=desc&includeUnconfirmed=false"
-  
+    
       case HTTPoison.get(url, [{"accept", "application/json"}]) do
         {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
           case Jason.decode(body) do
             {:ok, data} when is_list(data) -> data
             {:error, _} -> []
           end
-  
-        {:error, reason} ->
-          Logger.error("Failed to fetch boxes for token_id #{token_id}: #{inspect(reason)}")
+    
+        {:ok, %HTTPoison.Response{status_code: status_code, body: body}} when status_code >= 400 ->
+          Logger.error("[BoxHistoryCache] HTTP Error #{status_code}: #{body}")
+          []
+    
+        {:error, %HTTPoison.Error{reason: reason}} ->
+          Logger.error("[BoxHistoryCache] Request failed: #{inspect(reason)}")
           []
       end
     end
