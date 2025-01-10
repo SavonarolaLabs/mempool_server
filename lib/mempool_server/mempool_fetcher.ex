@@ -7,6 +7,7 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.Constants
   alias MempoolServer.TxHistoryCache
   alias MempoolServer.BoxHistoryCache
+  alias MempoolServer.ErgoTreeSubscriptionsCache
 
   @polling_interval 1_000
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
@@ -84,6 +85,7 @@ defmodule MempoolServer.MempoolFetcher do
             unconfirmed_txs = fetch_and_enrich_mempool_transactions()
             broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
             broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
+            broadcast_tree_transactions(unconfirmed_txs, confirmed_txs, info_data)
 
             # Update local state
             %{
@@ -206,6 +208,25 @@ defmodule MempoolServer.MempoolFetcher do
       )
     end)
   end
+
+  defp broadcast_tree_transactions(unconfirmed, confirmed, info_data) do
+    ErgoTreeSubscriptionsCache.get_all_subscriptions()
+    |> Enum.each(fn {ergo_tree, _pids} ->
+      unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, [ergo_tree]))
+      confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, [ergo_tree]))
+  
+      MempoolServerWeb.Endpoint.broadcast!(
+        "ergotree:#{ergo_tree}",
+        "transactions",
+        %{
+          unconfirmed_transactions: unconfirmed_filtered,
+          confirmed_transactions: confirmed_filtered,
+          info: info_data
+        }
+      )
+    end)
+  end
+  
 
   # ------------------------------------------------------------------
   # Helpers
