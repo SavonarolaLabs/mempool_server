@@ -16,6 +16,7 @@ defmodule MempoolServer.Application do
       # Start to serve requests, typically the last entry
       #MempoolServer.Repo,
       # Start the MempoolFetcher
+      MempoolServer.ErgoTreeSubscriptionsCache,
       MempoolServer.BoxCache,
       MempoolServer.TxHistoryCache,
       {MempoolServer.TransactionsCache, []},
