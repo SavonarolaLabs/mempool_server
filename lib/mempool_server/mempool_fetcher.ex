@@ -197,17 +197,15 @@ defmodule MempoolServer.MempoolFetcher do
       unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, trees))
       confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, trees))
   
-      unless unconfirmed_filtered == [] and confirmed_filtered == [] do
-          MempoolServerWeb.Endpoint.broadcast!(
-            "mempool:#{name}",
-            name,
-            %{
-              unconfirmed_transactions: unconfirmed_filtered,
-              confirmed_transactions: confirmed_filtered,
-              info: info_data
-            }
-          )
-        end
+      MempoolServerWeb.Endpoint.broadcast!(
+        "mempool:#{name}",
+        name,
+        %{
+          unconfirmed_transactions: unconfirmed_filtered,
+          confirmed_transactions: confirmed_filtered,
+          info: info_data
+        }
+      )
     end)
   end
 
