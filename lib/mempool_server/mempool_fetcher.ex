@@ -64,7 +64,7 @@ defmodule MempoolServer.MempoolFetcher do
 
           # If neither changed, do nothing
           if new_last_seen == state.last_seen_message_time and
-             new_header_id == state.best_full_header_id do
+               new_header_id == state.best_full_header_id do
             state
           else
             # Possibly fetch newly confirmed transactions if the header changed
@@ -86,6 +86,7 @@ defmodule MempoolServer.MempoolFetcher do
             broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
             broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
             broadcast_tree_transactions(unconfirmed_txs, confirmed_txs, info_data)
+            broadcast_oracle_boxes()
 
             # Update local state
             %{
@@ -124,8 +125,8 @@ defmodule MempoolServer.MempoolFetcher do
 
     # 3. Gather all relevant box IDs
     output_box_ids = collect_output_box_ids(transactions)
-    input_box_ids  = collect_input_box_ids(transactions)
-    all_box_ids    = (output_box_ids ++ input_box_ids) |> Enum.uniq()
+    input_box_ids = collect_input_box_ids(transactions)
+    all_box_ids = (output_box_ids ++ input_box_ids) |> Enum.uniq()
 
     # 4. Remove stale boxes from BoxCache
     BoxCache.remove_unobserved_boxes(all_box_ids)
@@ -178,7 +179,7 @@ defmodule MempoolServer.MempoolFetcher do
   end
 
   # ------------------------------------------------------------------
-  # Broadcast
+  # Broadcast all / filtered / tree transactions
   # ------------------------------------------------------------------
   defp broadcast_all_transactions(unconfirmed, confirmed, info_data) do
     MempoolServerWeb.Endpoint.broadcast!(
@@ -196,7 +197,7 @@ defmodule MempoolServer.MempoolFetcher do
     Enum.each(Constants.filtered_transactions(), fn %{name: name, ergo_trees: trees} ->
       unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, trees))
       confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, trees))
-  
+
       MempoolServerWeb.Endpoint.broadcast!(
         "mempool:#{name}",
         name,
@@ -214,7 +215,7 @@ defmodule MempoolServer.MempoolFetcher do
     |> Enum.each(fn {ergo_tree, _pids} ->
       unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, [ergo_tree]))
       confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, [ergo_tree]))
-  
+
       unless unconfirmed_filtered == [] and confirmed_filtered == [] do
         MempoolServerWeb.Endpoint.broadcast!(
           "ergotree:#{ergo_tree}",
@@ -228,8 +229,48 @@ defmodule MempoolServer.MempoolFetcher do
       end
     end)
   end
-  
-  
+
+  # ------------------------------------------------------------------
+  # >>> New function to broadcast the boxes just like channel join <<<
+  # ------------------------------------------------------------------
+  defp broadcast_oracle_boxes do
+    # Get all confirmed boxes from cache
+    all_boxes = BoxHistoryCache.get_all_boxes()
+
+    confirmed_payload =
+      all_boxes
+      |> Enum.reduce(%{}, fn {name, boxes}, acc ->
+        Map.put(acc, "confirmed_#{name}", boxes)
+      end)
+
+    # Build unconfirmed boxes by searching all mempool transactions
+    unconfirmed_payload =
+      Constants.boxes_by_token_id()
+      |> Enum.reduce(%{}, fn %{name: name, token_id: token_id}, acc ->
+        transactions = TransactionsCache.get_all_transactions()
+
+        unconfirmed_boxes =
+          transactions
+          |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
+          |> Enum.filter(fn output ->
+            Enum.any?(output["assets"] || [], fn asset ->
+              asset["tokenId"] == token_id
+            end)
+          end)
+
+        Map.put(acc, "unconfirmed_#{name}", unconfirmed_boxes)
+      end)
+
+    # Merge confirmed & unconfirmed
+    reply_payload = Map.merge(confirmed_payload, unconfirmed_payload)
+
+    # Broadcast payload to "mempool:oracle_boxes" the same way the channel join does
+    MempoolServerWeb.Endpoint.broadcast!(
+      "mempool:oracle_boxes",
+      "oracle_boxes",
+      reply_payload
+    )
+  end
 
   # ------------------------------------------------------------------
   # Helpers
