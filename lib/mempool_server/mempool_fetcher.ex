@@ -118,42 +118,44 @@ defmodule MempoolServer.MempoolFetcher do
   defp fetch_and_enrich_mempool_transactions do
     # 1. Fetch all mempool transactions
     transactions = fetch_all_mempool_transactions()
-
+  
     # 2. Remove stale transactions from timestamp cache
     new_tx_ids = Enum.map(transactions, & &1["id"])
     TransactionsCache.remove_unobserved_transactions(new_tx_ids)
-
-    # 3. Gather all relevant box IDs
-    output_box_ids = collect_output_box_ids(transactions)
+  
+    # 3. Gather input and output box IDs
     input_box_ids = collect_input_box_ids(transactions)
-    all_box_ids = (output_box_ids ++ input_box_ids) |> Enum.uniq()
-
-    # 4. Remove stale boxes from BoxCache
-    BoxCache.remove_unobserved_boxes(all_box_ids)
-
-    # 5. Identify which box IDs need fetching
-    missing_box_ids =
-      all_box_ids
+    output_boxes = collect_output_boxes(transactions)
+  
+    # 4. Add output boxes directly to BoxCache
+    Enum.each(output_boxes, fn box ->
+      BoxCache.put_box(box["boxId"], box)
+    end)
+  
+    # 5. Determine missing input boxes not already cached
+    missing_input_box_ids =
+      input_box_ids
       |> Enum.filter(fn box_id -> BoxCache.get_box(box_id) == nil end)
-
-    # 6. Fetch missing boxes
-    newly_fetched_boxes = fetch_boxes_by_ids(missing_box_ids)
-
-    # 7. Store them in BoxCache
+  
+    # 6. Fetch missing input boxes
+    newly_fetched_boxes = fetch_boxes_by_ids(missing_input_box_ids)
+  
+    # 7. Store fetched input boxes in BoxCache
     Enum.each(newly_fetched_boxes, fn box ->
       BoxCache.put_box(box["boxId"], box)
     end)
-
+  
     # 8. Enhance & add creation timestamps
     enriched =
       transactions
       |> enhance_transactions()
       |> add_creation_timestamps()
-
-    # 9. Cache them so we can quickly reuse them
+  
+    # 9. Cache enriched transactions for reuse
     TransactionsCache.put_all_transactions(enriched)
     enriched
   end
+  
 
   # ------------------------------------------------------------------
   # Fetch & enrich Confirmed Transactions
@@ -294,11 +296,10 @@ defmodule MempoolServer.MempoolFetcher do
     end
   end
 
-  defp collect_output_box_ids(transactions) do
+  defp collect_output_boxes(transactions) do
     transactions
     |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
-    |> Enum.map(& &1["boxId"])
-    |> Enum.uniq()
+    |> Enum.uniq_by(& &1["boxId"])
   end
 
   defp collect_input_box_ids(transactions) do
