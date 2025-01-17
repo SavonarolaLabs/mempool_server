@@ -111,6 +111,9 @@ defmodule MempoolServer.Constants do
       },%{
         name: "erg_xau",
         token_id: "3c45f29a5165b030fdb5eaf5d81f8108f9d8f507b31487dd51f4ae08fe07cf4a"
+      },%{
+        name: "dexygold_lp",
+        token_id: "905ecdef97381b92c2f0ea9b516f312bfb18082c61b24b40affa6a55555c77c7"
       }
     ]
 
