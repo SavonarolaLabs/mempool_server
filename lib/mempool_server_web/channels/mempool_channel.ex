@@ -100,28 +100,78 @@ defmodule MempoolServerWeb.MempoolChannel do
   # -------------------------------------------
   @impl true
   def handle_in("submit_tx", %{"transaction" => transaction} = payload, socket) do
-    # 1) (Optional) Validate or store the incoming transaction.
-    #    For example, you might require an "amount" field to be > 0:
-    cond do
-      is_map(transaction) and Map.has_key?(transaction, "amount") and transaction["amount"] > 0 ->
-        # If valid, broadcast the transaction event to all channel subscribers
-        broadcast!(socket, "sigmausd_transactions", payload)
+    # Perform the transaction check via HTTP
+    case check_transaction(transaction) do
+      {:ok, _response} ->
+        # If the check is successful, submit the transaction
+        case submit_transaction(transaction) do
+          {:ok, submit_response} ->
+            # Broadcast the transaction and reply with success
+            broadcast!(socket, "sigmausd_transactions", payload)
+            {:reply, {:ok, %{status: "success", detail: "Transaction submitted", response: submit_response}}, socket}
   
-        # Reply with an :ok status
-        {:reply, {:ok, %{status: "success", detail: "Transaction broadcasted"}}, socket}
+          {:error, submit_error} ->
+            # Handle transaction submission error
+            {:reply, {:error, %{status: "error", detail: "Transaction submission failed", error: submit_error}}, socket}
+        end
   
-      true ->
-        # If invalid, respond with an error
-        {:reply, {:error, %{status: "error", detail: "Invalid transaction data"}}, socket}
+      {:error, check_error} ->
+        # Handle transaction check failure
+        {:reply, {:error, %{status: "error", detail: "Transaction check failed", error: check_error}}, socket}
     end
   end
-  
 
   # -------------------------------------------
   #  Handle inbound events (not used here)
   # -------------------------------------------
   def handle_in(_event, _params, socket) do
     {:noreply, socket}
+  end
+
+  defp check_transaction(transaction) do
+    url = "#{Constants.node_url()}/transactions/check"
+    headers = [
+      {"Content-Type", "application/json"},
+      {"Accept", "application/json"}
+    ]
+    body = Jason.encode!(transaction)
+  
+    case HTTPoison.post(url, body, headers, []) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
+        case Jason.decode(response_body) do
+          {:ok, parsed_response} -> {:ok, parsed_response}
+          _ -> {:error, "Invalid JSON response from transaction check"}
+        end
+  
+      {:ok, %HTTPoison.Response{status_code: status_code, body: response_body}} ->
+        {:error, "Transaction check failed with status #{status_code}: #{response_body}"}
+  
+      {:error, %HTTPoison.Error{reason: reason}} ->
+        {:error, "HTTP request error: #{inspect(reason)}"}
+    end
+  end
+  
+  defp submit_transaction(transaction) do
+    url = "#{Constants.node_url()}/transactions"
+    headers = [
+      {"Content-Type", "application/json"},
+      {"Accept", "application/json"}
+    ]
+    body = Jason.encode!(transaction)
+  
+    case HTTPoison.post(url, body, headers, []) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
+        case Jason.decode(response_body) do
+          {:ok, parsed_response} -> {:ok, parsed_response}
+          _ -> {:error, "Invalid JSON response from transaction submission"}
+        end
+  
+      {:ok, %HTTPoison.Response{status_code: status_code, body: response_body}} ->
+        {:error, "Transaction submission failed with status #{status_code}: #{response_body}"}
+  
+      {:error, %HTTPoison.Error{reason: reason}} ->
+        {:error, "HTTP request error: #{inspect(reason)}"}
+    end
   end
 
   # -------------------------------------------
