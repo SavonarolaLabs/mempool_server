@@ -99,7 +99,7 @@ defmodule MempoolServerWeb.MempoolChannel do
   #  Handle inbound "submit_tx" event
   # -------------------------------------------
   @impl true
-  def handle_in("submit_tx", %{"transaction" => transaction} = payload, socket) do
+  def handle_in("submit_tx", %{"transaction" => transaction}, socket) do
     # Perform the transaction check via HTTP
     case check_transaction(transaction) do
       {:ok, _response} ->
