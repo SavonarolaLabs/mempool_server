@@ -107,7 +107,7 @@ defmodule MempoolServerWeb.MempoolChannel do
         case submit_transaction(transaction) do
           {:ok, submit_response} ->
             # Broadcast the transaction and reply with success
-            broadcast!(socket, "sigmausd_transactions", payload)
+            #broadcast!(socket, "sigmausd_transactions", payload)
             {:reply, {:ok, %{status: "success", detail: "Transaction submitted", response: submit_response}}, socket}
   
           {:error, submit_error} ->
