@@ -33,8 +33,7 @@ defmodule MempoolServer.MempoolFetcher do
   @impl true
   def handle_continue(:init_history, state) do
     # Force the TxHistoryCache to load (and thereby create its ETS table) once.
-    TxHistoryCache.update_history("sigmausd_transactions")
-    BoxHistoryCache.update_all_history()
+    fetch_tx_and_box_history()
     {:noreply, state}
   end
 
@@ -43,6 +42,12 @@ defmodule MempoolServer.MempoolFetcher do
     new_state = poll_info(state)
     schedule_poll()
     {:noreply, new_state}
+  end
+
+  defp fetch_tx_and_box_history() do
+    TxHistoryCache.update_history("sigmausd_transactions")
+    TxHistoryCache.update_history("dexygold_transactions")
+    BoxHistoryCache.update_all_history()
   end
 
   # -----------------------------------------------------
@@ -77,8 +82,7 @@ defmodule MempoolServer.MempoolFetcher do
 
             # If bestFullHeaderId changed, update the TxHistory
             if new_header_id != state.best_full_header_id do
-              TxHistoryCache.update_history("sigmausd_transactions")
-              BoxHistoryCache.update_all_history()
+              fetch_tx_and_box_history()
             end
 
             # Fetch & broadcast new mempool transactions
