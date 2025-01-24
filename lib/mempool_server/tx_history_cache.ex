@@ -34,7 +34,6 @@ defmodule MempoolServer.TxHistoryCache do
   # Public API
   # ----------------------------------------------------------------
 
-
   @doc """
   Update the TxHistory for the given transaction name.
   Supports multiple filtered transaction types from Constants.
@@ -43,27 +42,28 @@ defmodule MempoolServer.TxHistoryCache do
     case Enum.find(Constants.filtered_transactions(), fn ft -> ft.name == name end) do
       nil ->
         :ok
-  
+
       %{addresses: addresses} ->
         addresses
-        |> Enum.reduce({:ok, []}, fn address, {:ok, acc} ->
+        |> Enum.reduce([], fn address, acc ->
           case fetch_transactions_by_address(address) do
-            {:ok, new_txs} -> {:ok, acc ++ new_txs}
-            :error -> :error
+            {:ok, new_txs} -> acc ++ new_txs
+            :error ->
+              Logger.warning("[TxHistoryCache] Skipping failed fetch for address: #{address}")
+              acc
           end
         end)
         |> case do
-          {:ok, all_txs} ->
+          [] ->
+            Logger.warning("[TxHistoryCache] No transactions to update for #{name}.")
+            :ok
+
+          all_txs ->
             store_transactions(name, all_txs)
             :ok
-  
-          :error ->
-            Logger.error("[TxHistoryCache] Failed to update history for #{name}.")
-            :error
         end
     end
   end
-  
 
   @doc """
   Retrieve the recently cached transactions for a given transaction name.
@@ -101,9 +101,7 @@ defmodule MempoolServer.TxHistoryCache do
             {:ok, items}
 
           {:ok, other} ->
-            Logger.error("""
-            [TxHistoryCache] Unexpected JSON structure: #{inspect(other)}
-            """)
+            Logger.error("[TxHistoryCache] Unexpected JSON structure: #{inspect(other)}")
             :error
 
           error ->
