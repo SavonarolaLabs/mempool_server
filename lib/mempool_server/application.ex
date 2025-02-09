@@ -1,38 +1,27 @@
 defmodule MempoolServer.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
-  @moduledoc false
-
   use Application
 
   @impl true
   def start(_type, _args) do
+    Process.flag(:trap_exit, true)
+
     children = [
       MempoolServerWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:mempool_server, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: MempoolServer.PubSub},
-      # Start a worker by calling: MempoolServer.Worker.start_link(arg)
-      # {MempoolServer.Worker, arg},
-      # Start to serve requests, typically the last entry
-      #MempoolServer.Repo,
-      # Start the MempoolFetcher
       MempoolServer.ErgoTreeSubscriptionsCache,
       MempoolServer.BoxCache,
       MempoolServer.TxHistoryCache,
       {MempoolServer.TransactionsCache, []},
       MempoolServer.BoxHistoryCache,
       MempoolServer.MempoolFetcher,
-      MempoolServerWeb.Endpoint,
+      MempoolServerWeb.Endpoint
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: MempoolServer.Supervisor]
+    opts = [strategy: :one_for_all, name: MempoolServer.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
-  # Tell Phoenix to update the endpoint configuration
-  # whenever the application is updated.
   @impl true
   def config_change(changed, _new, removed) do
     MempoolServerWeb.Endpoint.config_change(changed, removed)
