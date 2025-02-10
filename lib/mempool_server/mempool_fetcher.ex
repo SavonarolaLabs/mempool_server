@@ -1,394 +1,166 @@
 defmodule MempoolServer.MempoolFetcher do
   use GenServer
   require Logger
-
   alias MempoolServer.TransactionsCache
   alias MempoolServer.BoxCache
-  alias MempoolServer.Constants
   alias MempoolServer.TxHistoryCache
   alias MempoolServer.BoxHistoryCache
   alias MempoolServer.ErgoTreeSubscriptionsCache
+  alias MempoolServer.Constants
+  alias MempoolServer.OracleBoxesUtil
+  alias MempoolServer.ErgoNode
 
-  @polling_interval 1_000
-  @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
+  @polling_interval 1000
 
   def start_link(_opts) do
-    GenServer.start_link(__MODULE__, %{
-      last_seen_message_time: nil,
-      best_full_header_id: nil,
-      last_confirmed_transactions: []
-    }, name: __MODULE__)
+    GenServer.start_link(__MODULE__, %{last_seen_message_time: nil, best_full_header_id: nil, last_confirmed_transactions: []}, name: __MODULE__)
   end
 
-  @impl true
   def init(state) do
-    # Schedule our periodic poll
     schedule_poll()
-
-    # We use :continue so that init/1 returns immediately,
-    # then do the "history load" in handle_continue/2
     {:ok, state, {:continue, :init_history}}
   end
 
-  @impl true
   def handle_continue(:init_history, state) do
-    # Force the TxHistoryCache to load (and thereby create its ETS table) once.
-    fetch_tx_and_box_history()
+    TxHistoryCache.update_history("sigmausd_transactions")
+    TxHistoryCache.update_history("dexygold_transactions")
+    BoxHistoryCache.update_all_history()
     {:noreply, state}
   end
 
-  @impl true
   def handle_info(:poll, state) do
     new_state = poll_info(state)
     schedule_poll()
     {:noreply, new_state}
   end
 
-  defp fetch_tx_and_box_history() do
-    TxHistoryCache.update_history("sigmausd_transactions")
-    TxHistoryCache.update_history("dexygold_transactions")
-    BoxHistoryCache.update_all_history()
-  end
-
-  # -----------------------------------------------------
-  # Poll /info once per second. If lastSeenMessageTime
-  # has *not* changed, do nothing at all.
-  # Otherwise:
-  #   - fetch mempool (unconfirmed) transactions
-  #   - if bestFullHeaderId changed => fetch confirmed transactions
-  #   - if bestFullHeaderId changed => update TxHistory
-  # -----------------------------------------------------
-  defp poll_info(state) do
-    url = "#{Constants.node_url()}/info"
-
-    case HTTPoison.get(url, [], @timeout_opts) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
-        with {:ok, info_data} <- Jason.decode(body) do
-          new_last_seen = info_data["lastSeenMessageTime"]
-          new_header_id = info_data["bestFullHeaderId"]
-
-          # If neither changed, do nothing
-          if new_last_seen == state.last_seen_message_time and
-               new_header_id == state.best_full_header_id do
-            state
-          else
-            # Possibly fetch newly confirmed transactions if the header changed
-            confirmed_txs =
-              if new_header_id != state.best_full_header_id do
-                fetch_and_enrich_confirmed_transactions(new_header_id)
-              else
-                []
-              end
-
-            # If bestFullHeaderId changed, update the TxHistory
-            if new_header_id != state.best_full_header_id do
-              fetch_tx_and_box_history()
-            end
-
-            # Fetch & broadcast new mempool transactions
-            unconfirmed_txs = fetch_and_enrich_mempool_transactions()
-            broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
-            broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
-            broadcast_tree_transactions(unconfirmed_txs, confirmed_txs, info_data)
-            broadcast_oracle_boxes()
-
-            # Update local state
-            %{
-              state
-              | last_seen_message_time: new_last_seen,
-                best_full_header_id: new_header_id,
-                last_confirmed_transactions: confirmed_txs
-            }
-          end
-        else
-          _ ->
-            Logger.error("Failed to decode /info response body or missing keys.")
-            state
-        end
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("Error fetching /info: #{inspect(reason)}")
-        state
-    end
-  end
-
   defp schedule_poll do
     Process.send_after(self(), :poll, @polling_interval)
   end
 
-  # ------------------------------------------------------------------
-  # Fetch & enrich Mempool Transactions
-  # ------------------------------------------------------------------
+  defp poll_info(state) do
+    case ErgoNode.fetch_info() do
+      {:ok, info_data} ->
+        new_last_seen = info_data["lastSeenMessageTime"]
+        new_header_id = info_data["bestFullHeaderId"]
+        if new_last_seen == state.last_seen_message_time and new_header_id == state.best_full_header_id do
+          state
+        else
+          confirmed_txs =
+            if new_header_id != state.best_full_header_id do
+              ErgoNode.fetch_block_transactions(new_header_id)
+              |> enhance_transactions()
+            else
+              []
+            end
+          if new_header_id != state.best_full_header_id do
+            TxHistoryCache.update_history("sigmausd_transactions")
+            TxHistoryCache.update_history("dexygold_transactions")
+            BoxHistoryCache.update_all_history()
+          end
+          unconfirmed_txs = fetch_and_enrich_mempool_transactions()
+          broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
+          broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
+          broadcast_tree_transactions(unconfirmed_txs, confirmed_txs, info_data)
+          broadcast_oracle_boxes()
+          %{state | last_seen_message_time: new_last_seen, best_full_header_id: new_header_id, last_confirmed_transactions: confirmed_txs}
+        end
+      _ -> state
+    end
+  end
+
   defp fetch_and_enrich_mempool_transactions do
-    # 1. Fetch all mempool transactions
     transactions = fetch_all_mempool_transactions()
-  
-    # 2. Remove stale transactions from timestamp cache
     new_tx_ids = Enum.map(transactions, & &1["id"])
     TransactionsCache.remove_unobserved_transactions(new_tx_ids)
-  
-    # 3. Gather input and output box IDs
-    input_box_ids = collect_input_box_ids(transactions)
-    output_boxes = collect_output_boxes(transactions)
-  
-    # 4. Add output boxes directly to BoxCache
-    Enum.each(output_boxes, fn box ->
-      BoxCache.put_box(box["boxId"], box)
-    end)
-  
-    # 5. Determine missing input boxes not already cached
-    missing_input_box_ids =
-      input_box_ids
-      |> Enum.filter(fn box_id -> BoxCache.get_box(box_id) == nil end)
-  
-    # 6. Fetch missing input boxes
-    newly_fetched_boxes = fetch_boxes_by_ids(missing_input_box_ids)
-  
-    # 7. Store fetched input boxes in BoxCache
-    Enum.each(newly_fetched_boxes, fn box ->
-      BoxCache.put_box(box["boxId"], box)
-    end)
-  
-    # 8. Enhance & add creation timestamps
+    input_box_ids =
+      transactions
+      |> Enum.flat_map(fn tx -> tx["inputs"] || [] end)
+      |> Enum.map(& &1["boxId"])
+      |> Enum.uniq()
+    output_boxes =
+      transactions
+      |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
+      |> Enum.uniq_by(& &1["boxId"])
+    Enum.each(output_boxes, fn b -> BoxCache.put_box(b["boxId"], b) end)
+    missing_input_box_ids = Enum.filter(input_box_ids, fn id -> BoxCache.get_box(id) == nil end)
+    new_boxes = ErgoNode.fetch_boxes_by_ids(missing_input_box_ids)
+    Enum.each(new_boxes, fn b -> BoxCache.put_box(b["boxId"], b) end)
     enriched =
       transactions
       |> enhance_transactions()
       |> add_creation_timestamps()
-  
-    # 9. Cache enriched transactions for reuse
     TransactionsCache.put_all_transactions(enriched)
     enriched
   end
-  
 
-  # ------------------------------------------------------------------
-  # Fetch & enrich Confirmed Transactions
-  # ------------------------------------------------------------------
-  defp fetch_and_enrich_confirmed_transactions(best_full_header_id) do
-    url = "#{Constants.node_url()}/blocks/#{best_full_header_id}/transactions"
-
-    case HTTPoison.get(url, [], @timeout_opts) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
-        case Jason.decode(body) do
-          {:ok, %{"headerId" => _header_id, "transactions" => confirmed_txs}} ->
-            enhance_transactions(confirmed_txs)
-
-          _ ->
-            Logger.error("Unexpected JSON structure for block transactions.")
-            []
+  defp fetch_all_mempool_transactions(offset \\ 0, acc \\ []) do
+    case ErgoNode.fetch_mempool_transactions(offset) do
+      {:ok, data} ->
+        if length(data) == 10000 do
+          fetch_all_mempool_transactions(offset + 10000, acc ++ data)
+        else
+          acc ++ data
         end
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("Error fetching confirmed transactions: #{inspect(reason)}")
-        []
+      _ -> acc
     end
   end
 
-  # ------------------------------------------------------------------
-  # Broadcast all / filtered / tree transactions
-  # ------------------------------------------------------------------
-  defp broadcast_all_transactions(unconfirmed, confirmed, info_data) do
-    MempoolServerWeb.Endpoint.broadcast!(
-      "mempool:transactions",
-      "all_transactions",
-      %{
-        unconfirmed_transactions: unconfirmed,
-        confirmed_transactions: confirmed,
-        info: info_data
-      }
-    )
+  defp broadcast_all_transactions(u, c, info) do
+    MempoolServerWeb.Endpoint.broadcast!("mempool:transactions", "all_transactions", %{unconfirmed_transactions: u, confirmed_transactions: c, info: info})
   end
 
-  defp broadcast_filtered_transactions(unconfirmed, confirmed, info_data) do
-    Enum.each(Constants.filtered_transactions(), fn %{name: name, ergo_trees: trees} ->
-      unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, trees))
-      confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, trees))
-
-      MempoolServerWeb.Endpoint.broadcast!(
-        "mempool:#{name}",
-        name,
-        %{
-          unconfirmed_transactions: unconfirmed_filtered,
-          confirmed_transactions: confirmed_filtered,
-          info: info_data
-        }
-      )
+  defp broadcast_filtered_transactions(u, c, info) do
+    Enum.each(Constants.filtered_transactions(), fn %{name: n, ergo_trees: t} ->
+      uf = Enum.filter(u, &transaction_has_output?(&1, t))
+      cf = Enum.filter(c, &transaction_has_output?(&1, t))
+      MempoolServerWeb.Endpoint.broadcast!("mempool:#{n}", n, %{unconfirmed_transactions: uf, confirmed_transactions: cf, info: info})
     end)
   end
 
-  defp broadcast_tree_transactions(unconfirmed, confirmed, info_data) do
+  defp broadcast_tree_transactions(u, c, info) do
     ErgoTreeSubscriptionsCache.get_all_subscriptions()
-    |> Enum.each(fn {ergo_tree, _pids} ->
-      unconfirmed_filtered = Enum.filter(unconfirmed, &transaction_has_output?(&1, [ergo_tree]))
-      confirmed_filtered = Enum.filter(confirmed, &transaction_has_output?(&1, [ergo_tree]))
-
-      unless unconfirmed_filtered == [] and confirmed_filtered == [] do
-        MempoolServerWeb.Endpoint.broadcast!(
-          "ergotree:#{ergo_tree}",
-          "transactions",
-          %{
-            unconfirmed_transactions: unconfirmed_filtered,
-            confirmed_transactions: confirmed_filtered,
-            info: info_data
-          }
-        )
+    |> Enum.each(fn {ergo_tree, _} ->
+      uf = Enum.filter(u, &transaction_has_output?(&1, [ergo_tree]))
+      cf = Enum.filter(c, &transaction_has_output?(&1, [ergo_tree]))
+      if uf != [] or cf != [] do
+        MempoolServerWeb.Endpoint.broadcast!("ergotree:#{ergo_tree}", "transactions", %{unconfirmed_transactions: uf, confirmed_transactions: cf, info: info})
       end
     end)
   end
 
-  # ------------------------------------------------------------------
-  # >>> New function to broadcast the boxes just like channel join <<<
-  # ------------------------------------------------------------------
   defp broadcast_oracle_boxes do
-    # Get all confirmed boxes from cache
-    all_boxes = BoxHistoryCache.get_all_boxes()
-
-    confirmed_payload =
-      all_boxes
-      |> Enum.reduce(%{}, fn {name, boxes}, acc ->
-        Map.put(acc, "confirmed_#{name}", boxes)
-      end)
-
-    # Build unconfirmed boxes by searching all mempool transactions
-    unconfirmed_payload =
-      Constants.boxes_by_token_id()
-      |> Enum.reduce(%{}, fn %{name: name, token_id: token_id}, acc ->
-        transactions = TransactionsCache.get_all_transactions()
-
-        unconfirmed_boxes =
-          transactions
-          |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
-          |> Enum.filter(fn output ->
-            Enum.any?(output["assets"] || [], fn asset ->
-              asset["tokenId"] == token_id
-            end)
-          end)
-
-        Map.put(acc, "unconfirmed_#{name}", unconfirmed_boxes)
-      end)
-
-    # Merge confirmed & unconfirmed
-    reply_payload = Map.merge(confirmed_payload, unconfirmed_payload)
-
-    # Broadcast payload to "mempool:oracle_boxes" the same way the channel join does
-    MempoolServerWeb.Endpoint.broadcast!(
-      "mempool:oracle_boxes",
-      "oracle_boxes",
-      reply_payload
-    )
+    payload = OracleBoxesUtil.oracle_boxes_payload()
+    MempoolServerWeb.Endpoint.broadcast!("mempool:oracle_boxes", "oracle_boxes", payload)
   end
 
-  # ------------------------------------------------------------------
-  # Helpers
-  # ------------------------------------------------------------------
-  defp fetch_all_mempool_transactions(offset \\ 0, transactions \\ []) do
-    url = "#{Constants.node_url()}/transactions/unconfirmed?limit=10000&offset=#{offset}"
-
-    case HTTPoison.get(url, [], @timeout_opts) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
-        {:ok, data} = Jason.decode(body)
-
-        if length(data) == 10_000 do
-          fetch_all_mempool_transactions(offset + 10_000, transactions ++ data)
-        else
-          transactions ++ data
-        end
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("Error fetching mempool transactions: #{inspect(reason)}")
-        transactions
-    end
-  end
-
-  defp collect_output_boxes(transactions) do
-    transactions
-    |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
-    |> Enum.uniq_by(& &1["boxId"])
-  end
-
-  defp collect_input_box_ids(transactions) do
-    transactions
-    |> Enum.flat_map(fn tx -> tx["inputs"] || [] end)
-    |> Enum.map(& &1["boxId"])
-    |> Enum.uniq()
-  end
-
-  defp fetch_boxes_by_ids([]), do: []
-
-  defp fetch_boxes_by_ids(box_ids) do
-    box_ids
-    |> Enum.chunk_every(100)
-    |> Enum.flat_map(&fetch_boxes_batch/1)
-  end
-
-  defp fetch_boxes_batch(box_ids_chunk) do
-    url = "#{Constants.node_url()}/utxo/withPool/byIds"
-    headers = [
-      {"Content-Type", "application/json"},
-      {"Accept", "application/json"}
-    ]
-    body = Jason.encode!(box_ids_chunk)
-
-    case HTTPoison.post(url, body, headers, @timeout_opts) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
-        case Jason.decode(response_body) do
-          {:ok, boxes} -> boxes
-          _ -> []
-        end
-
-      {:ok, %HTTPoison.Response{status_code: status_code, body: response_body}} ->
-        Logger.error("Error fetching boxes (HTTP #{status_code}): #{response_body}")
-        []
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error("Error fetching boxes: #{inspect(reason)}")
-        []
-    end
-  end
-
-  defp enhance_transactions(transactions) do
-    Enum.map(transactions, &enhance_transaction/1)
-  end
-
-  defp enhance_transaction(transaction) do
-    inputs = transaction["inputs"] || []
-
-    enhanced_inputs =
-      Enum.map(inputs, fn input ->
-        box_id = input["boxId"]
-
-        case BoxCache.get_box(box_id) do
-          nil -> input
-          box_data -> Map.merge(input, box_data)
-        end
-      end)
-
-    Map.put(transaction, "inputs", enhanced_inputs)
-  end
-
-  defp add_creation_timestamps(transactions) do
-    Enum.map(transactions, fn tx ->
-      tx_id = tx["id"]
-
-      creation_ts =
-        case TransactionsCache.get_timestamp(tx_id) do
-          nil ->
-            now_ms = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
-            TransactionsCache.put_timestamp(tx_id, now_ms)
-            now_ms
-
-          existing_ts ->
-            existing_ts
-        end
-
-      Map.put(tx, "creationTimestamp", creation_ts)
+  defp enhance_transactions(txs) do
+    Enum.map(txs, fn tx ->
+      inputs = tx["inputs"] || []
+      enhanced =
+        Enum.map(inputs, fn i ->
+          box_data = BoxCache.get_box(i["boxId"])
+          if box_data, do: Map.merge(i, box_data), else: i
+        end)
+      Map.put(tx, "inputs", enhanced)
     end)
   end
 
-  defp transaction_has_output?(transaction, ergo_trees) do
-    outputs = transaction["outputs"] || []
-    Enum.any?(outputs, fn output ->
-      output["ergoTree"] in ergo_trees
+  defp add_creation_timestamps(txs) do
+    Enum.map(txs, fn tx ->
+      id = tx["id"]
+      ts = TransactionsCache.get_timestamp(id)
+      if ts do
+        Map.put(tx, "creationTimestamp", ts)
+      else
+        now_ms = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+        TransactionsCache.put_timestamp(id, now_ms)
+        Map.put(tx, "creationTimestamp", now_ms)
+      end
     end)
+  end
+
+  defp transaction_has_output?(tx, trees) do
+    Enum.any?(tx["outputs"] || [], fn o -> o["ergoTree"] in trees end)
   end
 end

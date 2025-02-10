@@ -12,6 +12,8 @@ defmodule MempoolServerWeb.Router do
     get "/transactions/sigmausd", TransactionController, :sigmausd_transactions
     get "/history/recent", HistoryController, :recent_transactions
     get "/utxo/byAddress/:address", BlockchainController, :unspent_by_address
+    get "/oracles", CacheController, :index
+    get "/transactions/:name", CacheController, :transactions
 
     resources "/tracked_ergo_trees", TrackedErgoTreeController, only: [:index, :create, :update]
   end
