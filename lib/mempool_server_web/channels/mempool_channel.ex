@@ -6,6 +6,11 @@ defmodule MempoolServerWeb.MempoolChannel do
   alias MempoolServer.ErgoTreeSubscriptionsCache
   alias MempoolServer.OracleBoxesUtil
   alias MempoolServer.ErgoNode
+  alias MempoolServer.NodeCache
+
+  def join("mempool:info", _msg, socket) do
+    {:ok, NodeCache.get_node_info(), socket}
+  end
 
   def join("mempool:oracle_boxes", _msg, socket) do
     {:ok, OracleBoxesUtil.oracle_boxes_payload(), socket}
@@ -37,8 +42,11 @@ defmodule MempoolServerWeb.MempoolChannel do
     case ErgoNode.check_transaction(tx) do
       {:ok, _} ->
         case ErgoNode.submit_transaction(tx) do
-          {:ok, r} -> {:reply, {:ok, %{status: "success", detail: "Transaction submitted", response: r}}, socket}
-          {:error, e} -> {:reply, {:error, %{status: "error", detail: "Transaction submission failed", error: e}}, socket}
+          {:ok, r} ->
+            {:reply, {:ok, %{status: "success", detail: "Transaction submitted", response: r}}, socket}
+
+          {:error, e} ->
+            {:reply, {:error, %{status: "error", detail: "Transaction submission failed", error: e}}, socket}
         end
       {:error, e} ->
         {:reply, {:error, %{status: "error", detail: "Transaction check failed", error: e}}, socket}

@@ -9,6 +9,7 @@ defmodule MempoolServer.Application do
       MempoolServerWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:mempool_server, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: MempoolServer.PubSub},
+      MempoolServer.NodeCache,
       MempoolServer.ErgoTreeSubscriptionsCache,
       MempoolServer.BoxCache,
       MempoolServer.TxHistoryCache,

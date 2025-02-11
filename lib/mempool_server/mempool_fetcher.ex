@@ -9,6 +9,7 @@ defmodule MempoolServer.MempoolFetcher do
   alias MempoolServer.Constants
   alias MempoolServer.OracleBoxesUtil
   alias MempoolServer.ErgoNode
+  alias MempoolServer.NodeCache
 
   @polling_interval 1000
 
@@ -43,9 +44,13 @@ defmodule MempoolServer.MempoolFetcher do
       {:ok, info_data} ->
         new_last_seen = info_data["lastSeenMessageTime"]
         new_header_id = info_data["bestFullHeaderId"]
+
         if new_last_seen == state.last_seen_message_time and new_header_id == state.best_full_header_id do
           state
         else
+          broadcast_node_info(info_data)
+          NodeCache.put_node_info(info_data)
+
           confirmed_txs =
             if new_header_id != state.best_full_header_id do
               ErgoNode.fetch_block_transactions(new_header_id)
@@ -53,19 +58,29 @@ defmodule MempoolServer.MempoolFetcher do
             else
               []
             end
+
           if new_header_id != state.best_full_header_id do
             TxHistoryCache.update_history("sigmausd_transactions")
             TxHistoryCache.update_history("dexygold_transactions")
             BoxHistoryCache.update_all_history()
           end
+
           unconfirmed_txs = fetch_and_enrich_mempool_transactions()
           broadcast_all_transactions(unconfirmed_txs, confirmed_txs, info_data)
           broadcast_filtered_transactions(unconfirmed_txs, confirmed_txs, info_data)
           broadcast_tree_transactions(unconfirmed_txs, confirmed_txs, info_data)
           broadcast_oracle_boxes()
-          %{state | last_seen_message_time: new_last_seen, best_full_header_id: new_header_id, last_confirmed_transactions: confirmed_txs}
+
+          %{
+            state
+            | last_seen_message_time: new_last_seen,
+              best_full_header_id: new_header_id,
+              last_confirmed_transactions: confirmed_txs
+          }
         end
-      _ -> state
+
+      _ ->
+        state
     end
   end
 
@@ -73,23 +88,29 @@ defmodule MempoolServer.MempoolFetcher do
     transactions = fetch_all_mempool_transactions()
     new_tx_ids = Enum.map(transactions, & &1["id"])
     TransactionsCache.remove_unobserved_transactions(new_tx_ids)
+
     input_box_ids =
       transactions
       |> Enum.flat_map(fn tx -> tx["inputs"] || [] end)
       |> Enum.map(& &1["boxId"])
       |> Enum.uniq()
+
     output_boxes =
       transactions
       |> Enum.flat_map(fn tx -> tx["outputs"] || [] end)
       |> Enum.uniq_by(& &1["boxId"])
+
     Enum.each(output_boxes, fn b -> BoxCache.put_box(b["boxId"], b) end)
+
     missing_input_box_ids = Enum.filter(input_box_ids, fn id -> BoxCache.get_box(id) == nil end)
     new_boxes = ErgoNode.fetch_boxes_by_ids(missing_input_box_ids)
     Enum.each(new_boxes, fn b -> BoxCache.put_box(b["boxId"], b) end)
+
     enriched =
       transactions
       |> enhance_transactions()
       |> add_creation_timestamps()
+
     TransactionsCache.put_all_transactions(enriched)
     enriched
   end
@@ -97,13 +118,19 @@ defmodule MempoolServer.MempoolFetcher do
   defp fetch_all_mempool_transactions(offset \\ 0, acc \\ []) do
     case ErgoNode.fetch_mempool_transactions(offset) do
       {:ok, data} ->
-        if length(data) == 10000 do
-          fetch_all_mempool_transactions(offset + 10000, acc ++ data)
+        if length(data) == 10_000 do
+          fetch_all_mempool_transactions(offset + 10_000, acc ++ data)
         else
           acc ++ data
         end
-      _ -> acc
+
+      _ ->
+        acc
     end
+  end
+
+  defp broadcast_node_info(info_data) do
+    MempoolServerWeb.Endpoint.broadcast!("mempool:info", "node_info", info_data)
   end
 
   defp broadcast_all_transactions(u, c, info) do
@@ -137,11 +164,13 @@ defmodule MempoolServer.MempoolFetcher do
   defp enhance_transactions(txs) do
     Enum.map(txs, fn tx ->
       inputs = tx["inputs"] || []
+
       enhanced =
         Enum.map(inputs, fn i ->
           box_data = BoxCache.get_box(i["boxId"])
           if box_data, do: Map.merge(i, box_data), else: i
         end)
+
       Map.put(tx, "inputs", enhanced)
     end)
   end
@@ -150,6 +179,7 @@ defmodule MempoolServer.MempoolFetcher do
     Enum.map(txs, fn tx ->
       id = tx["id"]
       ts = TransactionsCache.get_timestamp(id)
+
       if ts do
         Map.put(tx, "creationTimestamp", ts)
       else
