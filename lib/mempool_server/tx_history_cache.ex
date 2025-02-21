@@ -1,8 +1,4 @@
 defmodule MempoolServer.TxHistoryCache do
-  @moduledoc """
-  Cache that stores the last 10 most recent transactions by address.
-  """
-
   use GenServer
   require Logger
 
@@ -11,16 +7,12 @@ defmodule MempoolServer.TxHistoryCache do
   @table_name :tx_history_cache
   @timeout_opts [hackney: [recv_timeout: 60_000, connect_timeout: 60_000]]
 
-  # ----------------------------------------------------------------
-  # GenServer callbacks
-  # ----------------------------------------------------------------
-
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
   def init(state) do
-      :ets.new(@table_name, [
+    :ets.new(@table_name, [
       :named_table,
       :set,
       :public,
@@ -30,16 +22,14 @@ defmodule MempoolServer.TxHistoryCache do
     {:ok, state}
   end
 
-  # ----------------------------------------------------------------
-  # Public API
-  # ----------------------------------------------------------------
-
   @doc """
-  Update the TxHistory for the given transaction name.
-  Supports multiple filtered transaction types from Constants.
+  Updates the TxHistory for the given transaction name.
+
+  - If one of the fetches fails, it logs a warning and proceeds with any
+    successful fetches from the other addresses. No crash occurs.
   """
   def update_history(name) do
-    case Enum.find(Constants.filtered_transactions(), fn ft -> ft.name == name end) do
+    case Enum.find(Constants.filtered_transactions(), &(&1.name == name)) do
       nil ->
         :ok
 
@@ -47,7 +37,9 @@ defmodule MempoolServer.TxHistoryCache do
         addresses
         |> Enum.reduce([], fn address, acc ->
           case fetch_transactions_by_address(address) do
-            {:ok, new_txs} -> acc ++ new_txs
+            {:ok, new_txs} ->
+              acc ++ new_txs
+
             :error ->
               Logger.warning("[TxHistoryCache] Skipping failed fetch for address: #{address}")
               acc
@@ -65,9 +57,6 @@ defmodule MempoolServer.TxHistoryCache do
     end
   end
 
-  @doc """
-  Retrieve the recently cached transactions for a given transaction name.
-  """
   def get_recent(name) do
     case :ets.lookup(@table_name, name) do
       [{^name, txs}] -> txs
@@ -75,14 +64,14 @@ defmodule MempoolServer.TxHistoryCache do
     end
   end
 
-  # ----------------------------------------------------------------
-  # Internal helpers
-  # ----------------------------------------------------------------
-
-  defp store_transactions(name, new_txs) when is_binary(name) and is_list(new_txs) do
-    existing = get_recent(name)
-    updated = (new_txs ++ existing) |> Enum.take(30)
-    :ets.insert(@table_name, {name, updated})
+  @doc """
+  Clears any existing records for `name` and stores a new, de-duplicated list
+  of transactions. No 30-item limit is enforced.
+  """
+  defp store_transactions(name, new_txs) do
+    :ets.delete(@table_name, name)
+    deduped = Enum.uniq_by(new_txs, & &1["id"])
+    :ets.insert(@table_name, {name, deduped})
     :ok
   end
 
@@ -92,11 +81,10 @@ defmodule MempoolServer.TxHistoryCache do
       {"accept", "application/json"},
       {"content-type", "application/json"}
     ]
-    body = Jason.encode!(address)
 
-    case HTTPoison.post(url, body, headers, @timeout_opts) do
-      {:ok, %HTTPoison.Response{status_code: 200, body: response_body}} ->
-        case Jason.decode(response_body) do
+    case HTTPoison.post(url, Jason.encode!(address), headers, @timeout_opts) do
+      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
+        case Jason.decode(body) do
           {:ok, %{"items" => items}} when is_list(items) ->
             {:ok, items}
 
@@ -109,8 +97,8 @@ defmodule MempoolServer.TxHistoryCache do
             :error
         end
 
-      {:ok, %HTTPoison.Response{status_code: status_code, body: response_body}} ->
-        Logger.error("[TxHistoryCache] HTTP #{status_code} => #{response_body}")
+      {:ok, %HTTPoison.Response{status_code: code, body: body}} ->
+        Logger.error("[TxHistoryCache] HTTP #{code} => #{body}")
         :error
 
       {:error, %HTTPoison.Error{reason: reason}} ->
