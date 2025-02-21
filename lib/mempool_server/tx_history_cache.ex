@@ -20,7 +20,7 @@ defmodule MempoolServer.TxHistoryCache do
   end
 
   def init(state) do
-    :ets.new(@table_name, [
+      :ets.new(@table_name, [
       :named_table,
       :set,
       :public,
@@ -81,7 +81,7 @@ defmodule MempoolServer.TxHistoryCache do
 
   defp store_transactions(name, new_txs) when is_binary(name) and is_list(new_txs) do
     existing = get_recent(name)
-    updated = (new_txs ++ existing) #|> Enum.take(10)
+    updated = (new_txs ++ existing) |> Enum.take(30)
     :ets.insert(@table_name, {name, updated})
     :ok
   end
